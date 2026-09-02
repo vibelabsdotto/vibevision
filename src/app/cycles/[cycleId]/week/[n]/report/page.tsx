@@ -77,9 +77,10 @@ export default async function CycleWeekReportPage({ params }: { params: Promise<
       <div className="mt-6 grid gap-4 md:grid-cols-[1.1fr_0.8fr_0.8fr] print:grid-cols-[1.1fr_0.8fr_0.8fr]">
         <div className="rounded-[16px] border border-border bg-surface-2/50 p-5 print:border-gray-300 print:bg-white">
           <h2 className="font-display text-lg font-bold tracking-tight print:text-black">Taktiken</h2>
-          <table className="mt-3 min-w-full text-sm print:text-xs">
-            <thead>
-              <tr className="text-left text-xs uppercase tracking-[0.14em] text-ink-3 print:text-gray-600">
+          <div className="mt-3 overflow-x-auto">
+            <table className="min-w-full text-sm print:text-xs">
+            <thead className="text-left text-xs uppercase tracking-[0.14em] text-ink-3 print:text-gray-600">
+              <tr>
                 <th className="pb-3 pr-4 font-mono font-medium">Taktik</th>
                 <th className="pb-3 pr-4 font-mono font-medium">Progress</th>
                 <th className="pb-3 pr-4 font-mono font-medium">Score</th>
@@ -101,6 +102,7 @@ export default async function CycleWeekReportPage({ params }: { params: Promise<
               ))}
             </tbody>
           </table>
+          </div>
         </div>
 
         <div className="rounded-[16px] border border-border bg-surface-2/50 p-5 print:border-gray-300 print:bg-white">
