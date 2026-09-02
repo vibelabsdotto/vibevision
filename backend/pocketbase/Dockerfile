@@ -13,8 +13,8 @@ RUN mkdir -p /pocketbase \
   && chmod +x /pocketbase/pocketbase
 
 # migrations and pb_hooks are baked into the image so schema + JS hooks ship with the app
-COPY migrations/ /pocketbase/pb_migrations/
-COPY hooks/ /pocketbase/pb_hooks/
+COPY backend/pocketbase/migrations/ /pocketbase/pb_migrations/
+COPY backend/pocketbase/hooks/ /pocketbase/pb_hooks/
 
 EXPOSE 8080
 VOLUME ["/pocketbase/pb_data"]
