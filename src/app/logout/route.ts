@@ -5,7 +5,7 @@ import { pbAuthCookieName } from "@/app/lib/crypto";
  * Clears the auth cookie and redirects back to /login.
  */
 export async function POST(request: Request) {
-  const response = Response.redirect(new URL("/login", request.url), 303);
+  const response = new Response(null, { status: 303, headers: { Location: "/login" } });
   response.headers.append("Set-Cookie", `${pbAuthCookieName()}=; Path=/; Max-Age=0; SameSite=Lax`);
   return response;
 }
