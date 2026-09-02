@@ -16,7 +16,7 @@ export default function LoginPage() {
     setError(null);
     const formData = new FormData(event.currentTarget);
     try {
-      const response = await fetch("/login", {
+      const response = await fetch("/api/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
