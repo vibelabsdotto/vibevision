@@ -11,7 +11,6 @@ next-env.d.ts
 # pocketbase runtime data
 backend/pocketbase/data/
 backend/pocketbase/pb_data/
-backend/pocketbase/migrations/
 backend/pocketbase/pocketbase
 backend/pocketbase/*.zip
 backend/pocketbase/Dockerfile.local
