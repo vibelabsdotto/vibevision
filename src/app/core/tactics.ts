@@ -1,0 +1,1 @@
+export { addTacticEntry, completeTactic } from "@/app/core";

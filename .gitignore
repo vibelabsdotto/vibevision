@@ -1,0 +1,41 @@
+# deps
+node_modules/
+.pnp
+.pnp.js
+
+# next
+.next/
+out/
+next-env.d.ts
+
+# pocketbase runtime data
+backend/pocketbase/data/
+backend/pocketbase/pb_data/
+backend/pocketbase/migrations/
+backend/pocketbase/pocketbase
+backend/pocketbase/*.zip
+backend/pocketbase/Dockerfile.local
+
+# env & secrets
+.env
+.env.*
+!.env.example
+secrets/
+
+# os
+.DS_Store
+Thumbs.db
+
+# hermes agent artifacts
+.hermes/
+.agents/
+skills-lock.json
+
+# ts
+*.tsbuildinfo
+
+# logs
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*backend/pocketbase/bin/
+backend/pocketbase/pb_migrations/

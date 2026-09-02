@@ -1,0 +1,42 @@
+{
+  "name": "vibevision",
+  "version": "0.1.0",
+  "private": false,
+  "license": "MIT",
+  "type": "module",
+  "description": "VibeVision — the open 12 Week Year execution operating system. Next.js + PocketBase.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vibelabsdotto/vibevision"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "pb:migrate": "node scripts/migrate-pocketbase.mjs",
+    "pb:migrate:local": "PB_URL=http://127.0.0.1:8090 PB_ADMIN_EMAIL=local-admin@vibelabs.local PB_ADMIN_PASSWORD=local-admin-123 node scripts/migrate-pocketbase.mjs",
+    "pb:start": "backend/pocketbase/pocketbase serve --http=127.0.0.1:8090 --dir=backend/pocketbase/data"
+  },
+  "dependencies": {
+    "next": "^16.3.4",
+    "pocketbase": "^0.28.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^26.4.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}

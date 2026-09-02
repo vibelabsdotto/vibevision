@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --coral: #FF6B4A;
+  --coral-hover: #F1573A;
+  --teal: #1FB6A6;
+  --teal-hover: #179E90;
+  --amber: #E8A94B;
+  --error: #E5484D;
+
+  --bg: #FAFAF7;
+  --surface: #FFFFFF;
+  --surface-2: #F1F1EC;
+  --border: #E2E2DA;
+  --ink: #16232E;
+  --ink-2: #4A5A66;
+  --ink-3: #8A97A0;
+}
+
+.dark {
+  --coral: #FF7A5C;
+  --coral-hover: #FF8C72;
+  --teal: #2CCABB;
+  --teal-hover: #4AD6C9;
+  --amber: #EFBB63;
+  --error: #F1646B;
+
+  --bg: #0B0C0E;
+  --surface: #141518;
+  --surface-2: #1C1D21;
+  --border: #232529;
+  --ink: #F2F2F2;
+  --ink-2: #A8A8A8;
+  --ink-3: #6B6B6B;
+}
+
+@theme inline {
+  --color-coral: var(--coral);
+  --color-coral-hover: var(--coral-hover);
+  --color-teal: var(--teal);
+  --color-teal-hover: var(--teal-hover);
+  --color-amber: var(--amber);
+  --color-error: var(--error);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-display: var(--font-space-grotesk), var(--font-inter), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--coral);
+  color: #fff;
+}
+
+.brand-gradient {
+  background-image: linear-gradient(100deg, #FF6B4A 0%, #E8A94B 45%, #1FB6A6 100%);
+}
+
+.brand-gradient-text {
+  background-image: linear-gradient(100deg, #FF6B4A 0%, #E8A94B 45%, #1FB6A6 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* eyebrow label — mono, teal, uppercase */
+.eyebrow {
+  font-family: var(--font-jetbrains), ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--teal);
+}
+
+/* status dots */
+.status-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
