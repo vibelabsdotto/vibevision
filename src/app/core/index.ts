@@ -999,6 +999,19 @@ export function getTacticExecutionScore(plan: TacticPlan, planned: number, actua
   return actual >= planned ? 1 : 0;
 }
 
+/**
+ * Overall execution score across all weeks of a cycle that have started
+ * (past + current). Future weeks are excluded — they have no data yet.
+ */
+export async function getOverallScore(cycleId: string, currentWeek: number): Promise<{ score: number; status: TrackStatus; weeksScored: number }> {
+  const weeks = await getCycleWeeks(cycleId);
+  const started = weeks.filter((week) => week.weekNumber <= currentWeek);
+  if (!started.length) return { score: 0, status: "off_track", weeksScored: 0 };
+  const scores = await Promise.all(started.map((week) => getWeekScore(cycleId, week.weekNumber)));
+  const score = scores.reduce((sum, row) => sum + row.weeklyScore, 0) / scores.length;
+  return { score, status: statusFromScore(score), weeksScored: scores.length };
+}
+
 function entryRecordsToValues(records: Array<Record<string, unknown>>): TacticEntryValue[] {
   return records.map((record) => ({
     tacticId: String(record.tactic),
