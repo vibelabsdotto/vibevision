@@ -1007,7 +1007,12 @@ export async function getOverallScore(cycleId: string, currentWeek: number): Pro
   const weeks = await getCycleWeeks(cycleId);
   const started = weeks.filter((week) => week.weekNumber <= currentWeek);
   if (!started.length) return { score: 0, status: "off_track", weeksScored: 0 };
-  const scores = await Promise.all(started.map((week) => getWeekScore(cycleId, week.weekNumber)));
+  // sequential — the PB SDK auto-cancels parallel identical requests on one
+  // client, and every getWeekScore fetches unfiltered tactic_schedules
+  const scores: Awaited<ReturnType<typeof getWeekScore>>[] = [];
+  for (const week of started) {
+    scores.push(await getWeekScore(cycleId, week.weekNumber));
+  }
   const score = scores.reduce((sum, row) => sum + row.weeklyScore, 0) / scores.length;
   return { score, status: statusFromScore(score), weeksScored: scores.length };
 }

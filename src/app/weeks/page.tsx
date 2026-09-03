@@ -27,9 +27,11 @@ export default async function WeeksPage() {
   const currentWeek = dash?.currentWeek ?? null;
   // score every week that has actually started (past + current); future weeks stay neutral
   const scorable = weeks.filter((week) => (currentWeek ? week.weekNumber <= currentWeek : true));
-  const scored = await Promise.all(
-    scorable.map(async (week) => ({ week, score: await getWeekScore(cycle.id, week.weekNumber) }))
-  );
+  // sequential — the PB SDK auto-cancels parallel identical requests on one client
+  const scored = [];
+  for (const week of scorable) {
+    scored.push({ week, score: await getWeekScore(cycle.id, week.weekNumber) });
+  }
   const byWeek = new Map(scored.map((entry) => [entry.week.weekNumber, entry.score]));
   const active = dash ? cycle.id === dash.cycle.id : cycle.status === "active";
 
