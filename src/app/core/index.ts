@@ -2005,47 +2005,32 @@ function buildTodayTactics(
 }
 
 export async function getDashboardData(cycleId?: string, weekNumber?: number, asOfDate?: string) {
-  const __t0 = performance.now();
-  const __mark = (label: string) => {
-    // eslint-disable-next-line no-console
-    console.log(`[perf-data] +${(performance.now() - __t0).toFixed(0)}ms ${label}`);
-  };
   const asOf = asOfDate ?? todayDateString();
   const cycle = cycleId ? await getCycleById(cycleId) : await getActiveCycle();
-  __mark("cycle");
   if (!cycle) return null;
   const currentWeek = weekNumber ?? (await getCurrentWeekNumber(cycle.id, asOf)) ?? 1;
-  __mark("currentWeek");
   const weeks = await getCycleWeeks(cycle.id);
-  __mark("weeks");
   const snapshotRow = await getWeekSnapshot(cycle.id, currentWeek);
-  __mark("snapshot");
   const snapshot = snapshotRow?.snapshot;
   const goals = snapshot?.goals.map((goal) => ({ ...goal, cycleId: cycle.id })) ?? (await listGoals(cycle.id));
-  __mark("goals");
   const lags = snapshot
     ? snapshot.lagIndicators
     : (await pb.collection("lag_indicators").getFullList({ filter: pb.filter("goal.cycle = {:c}", { c: cycle.id }) })).map(toLag);
-  __mark("lags");
   const score = await getWeekScore(cycle.id, currentWeek, { asOfDate, snapshotRow });
-  __mark("weekScore");
   const tactics: DashboardTacticRow[] = snapshot
     ? snapshot.tactics.map((tactic) => ({
         tactic: { ...tactic, goalId: String(tactic.goalId) } as DashboardTacticRow["tactic"],
         goalTitle: snapshot.goals.find((goal) => String(goal.id) === String(tactic.goalId))?.title ?? "Unknown goal"
       }))
     : await listTactics(cycle.id);
-  __mark("tactics");
   const entryRecords = await pb.collection("tactic_entries").getFullList({
     filter: pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycle.id, w: currentWeek })
   });
-  __mark("entries");
   const weekEntries = entryRecordsToValues(entryRecords);
   const weekBlockRecords = await pb.collection("tactic_calendar_blocks").getFullList({
     filter: pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycle.id, w: currentWeek }),
     sort: "date,startTime,id"
   });
-  __mark("blocks");
   const calendarBlocksForWeek: CalendarBlockRow[] = weekBlockRecords.map((record) => ({
     id: String(record.id),
     tacticId: String(record.tactic),
