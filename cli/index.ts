@@ -117,11 +117,14 @@ function str(flags: Parsed["flags"], name: string): string | undefined {
 
 async function main(): Promise<void> {
   const [command, sub, ...rest] = process.argv.slice(2);
+  // a flag right after the command (e.g. `vibevision cycles --json`) is not a subcommand
+  const effectiveSub = sub && sub.startsWith("--") ? undefined : sub;
+  const effectiveRest = sub && sub.startsWith("--") ? [sub, ...rest] : rest;
   if (!command || command === "help" || command === "--help" || command === "-h") {
     process.stdout.write(HELP + "\n");
     return;
   }
-  const { flags, positional } = parseFlags(rest);
+  const { flags, positional } = parseFlags(effectiveRest);
   const json = flags.json === true;
   const instanceFlag = str(flags, "instance");
 
