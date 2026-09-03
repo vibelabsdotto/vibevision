@@ -127,11 +127,13 @@ export async function addBlockAction(input: { tacticId: string; date: string }) 
   if (!input.date) throw new Error("Missing date");
   const tactic = await assertTacticInActiveCycle(input.tacticId);
   const plan = resolveTacticPlan(tactic);
-  if (styleOfPlan(plan) === "toggle") throw new Error("Toggles can't be scheduled");
+  const style = styleOfPlan(plan);
+  if (style === "toggle") throw new Error("Toggles can't be scheduled");
   await addTacticCalendarBlock({
     tacticId: input.tacticId,
     date: input.date,
-    plannedValue: plan.trackingType === "boolean" ? undefined : getOccurrenceTarget(plan)
+    // One block = one occurrence slot; volume keeps its target-based value.
+    plannedValue: style === "occurrence" ? 1 : plan.trackingType === "boolean" ? undefined : getOccurrenceTarget(plan)
   });
   revalidatePath("/calendar");
 }

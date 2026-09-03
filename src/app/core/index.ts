@@ -1043,7 +1043,7 @@ export async function getWeekScore(cycleId: string, weekNumber: number, options?
       ).map((block) => ({
         tacticId: String(block.tactic),
         date: String(block.date),
-        plannedValue: Number(block.plannedValue)
+        plannedValue: Number(block.plannedValue) || 1
       }));
   const weekStartDate = weekRow?.startDate ?? snapshot?.week?.startDate ?? null;
   const weekEndDate = weekRow?.endDate ?? snapshot?.week?.endDate ?? null;
@@ -1496,7 +1496,8 @@ export async function captureWeekSnapshot(cycleId: string, weekNumber: number) {
         startTime: (block.startTime as string) || null,
         endTime: (block.endTime as string) || null,
         durationMinutes: block.durationMinutes === "" || block.durationMinutes === null ? null : Number(block.durationMinutes),
-        plannedValue: Number(block.plannedValue),
+        // plannedValue is required > 0 by validation; legacy/hand-made rows fall back to one slot.
+        plannedValue: Number(block.plannedValue) || 1,
         note: (block.note as string) || null
       }))
   };
@@ -2173,7 +2174,7 @@ export function buildTodayTactics(
         startTime: block.startTime,
         endTime: block.endTime,
         durationMinutes: block.durationMinutes,
-        plannedValue: Number(block.plannedValue),
+        plannedValue: Number(block.plannedValue) || 1,
         note: block.note
       }));
       const scheduledWeekBlocks = blocksWeekByTactic[score.tacticId] ?? [];
