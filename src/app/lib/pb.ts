@@ -18,8 +18,14 @@ export const PB_URL = process.env.PB_URL ?? "http://127.0.0.1:8090";
  * transport (js-sdk docs; pocketbase/pocketbase discussion #5313, "API cache
  * issues and custom fetch functions").
  */
-const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 16 });
-const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 16 });
+/**
+ * Connection-per-request (no keep-alive): PB runs in the same Docker network
+ * (<1ms hop), so a fresh TCP connect costs nothing — while stale keep-alive
+ * sockets (PB closes idle connections) caused intermittent 100-600ms stalls
+ * with silent retries under load. No pooling, no stale-socket class.
+ */
+const httpAgent = new http.Agent({ keepAlive: false });
+const httpsAgent = new https.Agent({ keepAlive: false });
 
 type RawResponse = {
   ok: boolean;
