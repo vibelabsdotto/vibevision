@@ -39,7 +39,7 @@ export function AppSidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton asChild size="lg">
-              <Link href="/">
+              <Link href="/" prefetch={false}>
                 <span className="brand-gradient-text font-display text-lg font-bold tracking-tight">
                   VibeVision
                 </span>
@@ -59,7 +59,7 @@ export function AppSidebar() {
                 return (
                   <SidebarMenuItem key={item.href}>
                     <SidebarMenuButton asChild isActive={active} tooltip={item.label}>
-                      <Link href={item.href}>
+                      <Link href={item.href} prefetch={false}>
                         <item.icon />
                         <span>{item.label}</span>
                       </Link>

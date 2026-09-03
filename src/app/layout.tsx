@@ -109,6 +109,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   className="px-2 py-3 text-center text-sm font-medium text-ink-2 transition active:text-coral"
                   href={item.href}
                   key={item.href}
+                  prefetch={false}
                 >
                   {item.label}
                 </Link>
