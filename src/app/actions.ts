@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 
-import { getActiveCycle, getCalendarBlock, getOccurrenceTarget, getTactic, listGoals, resolveTacticPlan, todayDateString } from "@/app/core";
+import { getActiveCycle, getCalendarBlock, getOccurrenceTarget, getTactic, listGoals, resolveExecutionStyle, resolveTacticPlan, todayDateString, undoLatestTacticEntry, type TacticPlan } from "@/app/core";
+import * as coreModule from "@/app/core";
 import {
   addTacticCalendarBlock,
   deleteTacticCalendarBlock,
@@ -15,6 +16,15 @@ import { requireAuth } from "@/app/lib/auth";
 function value(formData: FormData, key: string) {
   const raw = formData.get(key);
   return typeof raw === "string" && raw.length > 0 ? raw : undefined;
+}
+
+type ExecutionStyle = "toggle" | "occurrence" | "volume";
+
+// Uses core's resolveExecutionStyle once it lands; falls back to trackingType until then.
+function styleOfPlan(plan: TacticPlan): ExecutionStyle {
+  const resolve = (coreModule as unknown as { resolveExecutionStyle?: (plan: TacticPlan) => ExecutionStyle }).resolveExecutionStyle;
+  if (typeof resolve === "function") return resolve(plan);
+  return plan.trackingType === "boolean" ? "toggle" : "volume";
 }
 
 async function assertTacticInActiveCycle(tacticId: string) {
@@ -60,7 +70,10 @@ export async function completeTacticAction(formData: FormData) {
   await requireAuth();
   const tacticId = String(value(formData, "tacticId") ?? "");
   if (!tacticId) throw new Error("Missing tacticId");
-  await assertTacticInActiveCycle(tacticId);
+  const tactic = await assertTacticInActiveCycle(tacticId);
+  if (styleOfPlan(resolveTacticPlan(tactic)) !== "toggle") {
+    throw new Error("Only toggles go through the Complete path");
+  }
   await completeTactic(tacticId);
   revalidatePath("/");
   revalidatePath("/today");
@@ -74,10 +87,16 @@ export async function stepEntryAction(formData: FormData) {
   if (!tacticId) throw new Error("Missing tacticId");
   if (delta !== "1" && delta !== "-1") throw new Error("Invalid delta: must be 1 or -1");
   const tactic = await assertTacticInActiveCycle(tacticId);
-  if (resolveTacticPlan(tactic).trackingType === "boolean") {
-    throw new Error("Boolean tactics only go through the Complete path");
+  const style = styleOfPlan(resolveTacticPlan(tactic));
+  if (style === "toggle") {
+    throw new Error("Toggles only go through the Complete path");
   }
-  await addTacticEntry({ tacticId, value: Number(delta), date: todayDateString() });
+  if (delta === "-1" && style === "occurrence") {
+    const undone = await undoLatestTacticEntry(tacticId, todayDateString());
+    if (!undone) throw new Error("Nothing to subtract today");
+  } else {
+    await addTacticEntry({ tacticId, value: Number(delta), date: todayDateString() });
+  }
   revalidatePath("/");
   revalidatePath("/today");
   revalidatePath("/daily-logs");
@@ -108,6 +127,7 @@ export async function addBlockAction(input: { tacticId: string; date: string }) 
   if (!input.date) throw new Error("Missing date");
   const tactic = await assertTacticInActiveCycle(input.tacticId);
   const plan = resolveTacticPlan(tactic);
+  if (styleOfPlan(plan) === "toggle") throw new Error("Toggles can't be scheduled");
   await addTacticCalendarBlock({
     tacticId: input.tacticId,
     date: input.date,

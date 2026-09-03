@@ -5,6 +5,7 @@
  * functions the web app renders from.
  */
 import { UsageError, assertInstance, connect, health } from "./client";
+import { pb } from "@/app/lib/pb";
 import * as Core from "@/app/core";
 
 export type Ctx = { instance: string; json: boolean };
@@ -15,6 +16,51 @@ const TRACKING_TYPES = ["boolean", "quantity", "duration"] as const;
 const RECURRENCE_TYPES = ["daily", "weekdays", "times_per_week", "once"] as const;
 type TrackingType = (typeof TRACKING_TYPES)[number];
 type RecurrenceType = (typeof RECURRENCE_TYPES)[number];
+
+const EXECUTION_STYLES = ["toggle", "occurrence", "volume"] as const;
+type ExecutionStyle = (typeof EXECUTION_STYLES)[number];
+
+/**
+ * Execution style derivation (same rule as core: missing `executionStyle`
+ * is derived lazily, never backfilled).
+ *   boolean × daily|weekdays          → toggle
+ *   boolean × times_per_week|once     → occurrence
+ *   quantity|duration × anything      → volume
+ */
+function deriveExecutionStyle(trackingType: string, recurrenceType: string): ExecutionStyle {
+  if (trackingType === "boolean" && (recurrenceType === "daily" || recurrenceType === "weekdays")) return "toggle";
+  if (trackingType === "boolean") return "occurrence";
+  return "volume";
+}
+
+/** Stored value wins; otherwise derive from tracking×recurrence (lazy, no backfill). */
+function getExecutionStyle(tactic: { executionStyle?: unknown; trackingType?: unknown; recurrenceType?: unknown }): ExecutionStyle {
+  const raw = (tactic as { executionStyle?: unknown }).executionStyle;
+  if (raw === "toggle" || raw === "occurrence" || raw === "volume") return raw;
+  return deriveExecutionStyle(String(tactic.trackingType ?? ""), String(tactic.recurrenceType ?? ""));
+}
+
+function assertStyleMatches(style: ExecutionStyle, trackingType: string, recurrenceType: string): void {
+  const expected = deriveExecutionStyle(trackingType, recurrenceType);
+  if (style !== expected) {
+    throw new Error(
+      `--style ${style} contradicts --tracking ${trackingType} + --recurrence ${recurrenceType} (expected ${expected}): ` +
+        `toggle = boolean×daily|weekdays, occurrence = boolean×times_per_week|once, volume = quantity|duration`
+    );
+  }
+}
+
+/**
+ * parseFlags keeps kebab-case as-is (`--starts-week` → flags["starts-week"]),
+ * so command code must read both spellings. This helper does that.
+ */
+function flag(args: Args, ...names: string[]): string | undefined {
+  for (const name of names) {
+    const v = args[name];
+    if (typeof v === "string") return v;
+  }
+  return undefined;
+}
 
 const indent = "  ";
 function pad(value: string, width: number): string {
@@ -172,7 +218,8 @@ export async function cmdTactics(args: Args, ctx: Ctx): Promise<void> {
       plan,
       goal: goalTitle,
       weeks: tactic.startsWeek || tactic.endsWeek ? `W${tactic.startsWeek ?? "?"}–${tactic.endsWeek ?? "?"}` : "all",
-      on: tactic.active ? "yes" : "no"
+      on: tactic.active ? "yes" : "no",
+      executionStyle: getExecutionStyle(tactic)
     });
   }
   if (ctx.json) return emit(ctx, "", { instance, tactics: rows });
@@ -180,13 +227,50 @@ export async function cmdTactics(args: Args, ctx: Ctx): Promise<void> {
   console.log(`\n${rows.length} tactic(s)`);
 }
 
+const TACTIC_ADD_HELP = `vibevision tactic add — create a tactic on a goal
+
+Usage: vibevision tactic add --goal <id> --title "…" [flags]
+
+Flags:
+  --tracking quantity|boolean|duration            (default quantity)
+  --recurrence daily|weekdays|times_per_week|once (default daily)
+  --style toggle|occurrence|volume                (alias --execution-style; default derived:
+                                                  boolean×daily|weekdays → toggle,
+                                                  boolean×times_per_week|once → occurrence,
+                                                  quantity|duration → volume)
+  --target <n> --count <n> --unit <text>
+  --week <n> --starts-week <n> --ends-week <n>
+
+A --style that contradicts tracking×recurrence is a hard error
+(e.g. --style toggle with --tracking quantity).
+
+Examples:
+  vibevision tactic add --goal <id> --title "Publish 7 posts" --tracking quantity --recurrence times_per_week --target 7 --unit posts
+  vibevision tactic add --goal <id> --title "Inbox zero" --tracking boolean --recurrence daily --style toggle
+  vibevision tactic add --goal <id> --title "Run 3x" --tracking boolean --recurrence times_per_week --count 3 --style occurrence`;
+
 export async function cmdTacticAdd(args: Args, ctx: Ctx): Promise<void> {
+  if (args.help === true || args.h === true) {
+    console.log(TACTIC_ADD_HELP);
+    return;
+  }
   const instance = connect(args.instance);
   if (!args.goal || !args.title) throw new Error("vibevision tactic add needs --goal <id> and --title \"…\"");
   const trackingType: TrackingType = args.tracking ?? "quantity";
   if (!TRACKING_TYPES.includes(trackingType)) throw new Error(`--tracking must be one of: ${TRACKING_TYPES.join(" | ")}`);
   const recurrenceType: RecurrenceType = args.recurrence ?? "daily";
   if (!RECURRENCE_TYPES.includes(recurrenceType)) throw new Error(`--recurrence must be one of: ${RECURRENCE_TYPES.join(" | ")}`);
+  const rawStyle = flag(args, "style", "execution-style", "executionStyle");
+  let executionStyle: ExecutionStyle;
+  if (rawStyle !== undefined) {
+    if (!EXECUTION_STYLES.includes(rawStyle as ExecutionStyle)) throw new Error(`--style must be one of: ${EXECUTION_STYLES.join(" | ")}`);
+    executionStyle = rawStyle as ExecutionStyle;
+    assertStyleMatches(executionStyle, trackingType, recurrenceType);
+  } else {
+    executionStyle = deriveExecutionStyle(trackingType, recurrenceType);
+  }
+  const startsWeekRaw = flag(args, "starts-week", "startsWeek");
+  const endsWeekRaw = flag(args, "ends-week", "endsWeek");
   const tactic = await Core.addTactic({
     goalId: args.goal,
     title: args.title,
@@ -196,19 +280,50 @@ export async function cmdTacticAdd(args: Args, ctx: Ctx): Promise<void> {
     targetValue: args.target ? Number(args.target) : undefined,
     unit: args.unit,
     week: args.week ? Number(args.week) : undefined,
-    startsWeek: args.startsWeek ? Number(args.startsWeek) : undefined,
-    endsWeek: args.endsWeek ? Number(args.endsWeek) : undefined
+    startsWeek: startsWeekRaw ? Number(startsWeekRaw) : undefined,
+    endsWeek: endsWeekRaw ? Number(endsWeekRaw) : undefined
   });
-  emit(ctx, `Added tactic "${tactic.title}" ${tactic.id}`, { instance, tactic });
+  // persist the (explicit or derived) style on the record; core reads it
+  // lazily when present. Best-effort: the tactic itself is already created.
+  try {
+    await pb.collection("tactics").update(tactic.id, { executionStyle });
+  } catch {
+    /* column may predate the migration on this instance — style still reported below */
+  }
+  emit(ctx, `Added tactic "${tactic.title}" ${tactic.id} (style ${executionStyle})`, { instance, tactic: { ...tactic, executionStyle } });
 }
 
 // ---------------------------------------------------------------------- today / score
+
+/**
+ * Enrich a today row for --json: executionStyle (stored or derived),
+ * weekRemaining (weekly remainder), and the "pool" kind for flexible
+ * weekly-pool tactics (occurrence/volume without a fixed daily target).
+ * BREAKING vs earlier builds: todayKind can now be "pool", in which case
+ * todayTarget is null and the actionable number is weekRemaining.
+ */
+function enrichTodayRow<T extends Record<string, any>>(row: T): T & Record<string, unknown> {
+  const executionStyle = getExecutionStyle(row as { executionStyle?: unknown; trackingType?: unknown; recurrenceType?: unknown });
+  const rawKind = String((row as Record<string, unknown>).todayKind ?? "");
+  const isPool = rawKind === "pool" || (rawKind === "unscheduled" && executionStyle !== "toggle");
+  const remaining = Number((row as Record<string, unknown>).remaining ?? 0);
+  return {
+    ...row,
+    executionStyle,
+    todayKind: isPool ? "pool" : rawKind,
+    todayTarget: isPool ? null : (row as Record<string, unknown>).todayTarget,
+    weekRemaining: remaining
+  };
+}
 
 export async function cmdToday(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
   const dash = await Core.getDashboardData();
   if (!dash) throw new Error("No active cycle found.");
-  if (ctx.json) return emit(ctx, "", { instance, today: dash.todayTactics, summary: dash.todaySummary, scheduled: dash.todayScheduledBlocks });
+  if (ctx.json) {
+    const today = dash.todayTactics.map((t) => enrichTodayRow(t as unknown as Record<string, unknown>));
+    return emit(ctx, "", { instance, today, summary: dash.todaySummary, scheduled: dash.todayScheduledBlocks });
+  }
   console.log(`Today — ${cycleLabel(dash.cycle)}, week ${dash.currentWeek}/12, ${dash.daysLeft} days left`);
   const rows = dash.todayTactics.map((t) => ({
     id: t.tacticId,
@@ -228,8 +343,12 @@ export async function cmdScore(args: Args, ctx: Ctx): Promise<void> {
   const cycle = args.cycle ? await Core.getCycleById(args.cycle) : await Core.getActiveCycle();
   if (!cycle) throw new Error("No active cycle. Pass --cycle <id>.");
   const week = args.week ? Number(args.week) : (await Core.getCurrentWeekNumber(cycle.id)) ?? 1;
-  const score = await Core.getWeekScore(cycle.id, week, { asOfDate: args.asOfDate });
-  if (ctx.json) return emit(ctx, "", { instance, cycle: cycle.id, week, score });
+  const asOfDate = flag(args, "as-of", "asOf", "asOfDate");
+  const score = await Core.getWeekScore(cycle.id, week, { asOfDate });
+  if (ctx.json) {
+    const tacticScores = score.tacticScores.map((t) => ({ ...t, executionStyle: getExecutionStyle(t) }));
+    return emit(ctx, "", { instance, cycle: cycle.id, week, score: { ...score, tacticScores } });
+  }
   const pct = (n: number) => `${Math.round(n * 100)}%`;
   console.log(`Week ${week}/12 — ${cycle.title}: ${pct(score.weeklyScore)} (${score.status})`);
   for (const g of score.goalScores) console.log(`${indent}${g.goalTitle}: ${pct(g.score)} (${g.status})`);
@@ -258,16 +377,44 @@ export async function cmdReport(args: Args, ctx: Ctx): Promise<void> {
 
 // ---------------------------------------------------------------------- log (entries + check-ins)
 
+const LOG_ENTRY_HELP = `vibevision log entry — log progress on a tactic
+
+Usage: vibevision log entry --tactic <id> [--value <n>] [--note "…"] [--date 2026-09-02|today]
+
+  occurrence tactics (boolean × times_per_week|once): --value must be a positive whole number.
+  quantity tactics: --value defaults to 1 when omitted.
+  duration tactics: --value is required (minutes).
+  toggle tactics (boolean × daily|weekdays): --value optional, defaults to 1 (complete).`;
+
 export async function cmdLogEntry(args: Args, ctx: Ctx): Promise<void> {
+  if (args.help === true || args.h === true) {
+    console.log(LOG_ENTRY_HELP);
+    return;
+  }
   const instance = connect(args.instance);
   if (!args.tactic) throw new Error("vibevision log entry needs --tactic <id> (see: vibevision tactics)");
+  const tactic = await Core.getTactic(args.tactic);
+  if (!tactic) throw new Error(`Tactic not found: ${args.tactic}`);
+  const executionStyle = getExecutionStyle(tactic);
+  const trackingType = String(tactic.trackingType);
+  let value = args.value != null ? Number(args.value) : undefined;
+  if (value !== undefined && !Number.isFinite(value)) throw new Error(`--value must be a number (got "${args.value}")`);
+  if (executionStyle === "occurrence") {
+    if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
+      throw new Error(`occurrence tactics need a positive whole --value (got "${args.value}")`);
+    }
+  } else if (trackingType === "quantity") {
+    if (value === undefined) value = 1;
+  } else if (trackingType === "duration") {
+    if (value === undefined) throw new Error("duration tactics need --value <minutes> (e.g. vibevision log entry --tactic <id> --value 30)");
+  }
   const entry = await Core.addTacticEntry({
     tacticId: args.tactic,
-    value: args.value != null ? Number(args.value) : undefined,
+    value,
     note: args.note,
-    date: args.date
+    date: args.date ?? Core.todayDateString()
   });
-  emit(ctx, `Logged entry on "${(await Core.getTactic(args.tactic))?.title ?? args.tactic}" (entry ${String(entry.id ?? "").slice(0, 13)}${args.value != null ? `, value ${args.value}` : ""})`, { instance, entry });
+  emit(ctx, `Logged entry on "${tactic.title}" (entry ${String(entry.id ?? "").slice(0, 13)}${value != null ? `, value ${value}` : ""})`, { instance, entry });
 }
 
 export async function cmdLogComplete(args: Args, ctx: Ctx): Promise<void> {
@@ -279,19 +426,21 @@ export async function cmdLogComplete(args: Args, ctx: Ctx): Promise<void> {
 
 export async function cmdLogMorning(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
-  const log = await Core.morning({ oneThing: args.oneThing, stress: args.stress != null ? Number(args.stress) : undefined, date: args.date });
-  emit(ctx, `Morning check-in saved${args.oneThing ? ` — one thing: ${args.oneThing}` : ""}`, { instance, log });
+  const oneThing = flag(args, "one-thing", "oneThing");
+  const log = await Core.morning({ oneThing, stress: args.stress != null ? Number(args.stress) : undefined, date: args.date });
+  emit(ctx, `Morning check-in saved${oneThing ? ` — one thing: ${oneThing}` : ""}`, { instance, log });
 }
 
 export async function cmdLogEvening(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
+  const deepWorkRaw = flag(args, "deep-work", "deepWork");
   const log = await Core.evening({
     agency: args.agency != null ? Number(args.agency) : undefined,
     stress: args.stress != null ? Number(args.stress) : undefined,
     wins: args.wins,
     avoidance: args.avoidance,
     notes: args.notes,
-    deepWorkMinutes: args.deepWork != null ? Number(args.deepWork) : undefined,
+    deepWorkMinutes: deepWorkRaw != null ? Number(deepWorkRaw) : undefined,
     comfortZoneDone: args.comfort === "true",
     date: args.date
   });
@@ -326,7 +475,8 @@ export async function cmdDashboard(args: Args, ctx: Ctx): Promise<void> {
   const cycle = args.cycle ? await Core.getCycleById(args.cycle) : await Core.getActiveCycle();
   if (!cycle) throw new Error("No active cycle. Pass --cycle <id>.");
   const week = args.week ? Number(args.week) : undefined;
-  const dash = await Core.getDashboardData(cycle.id, week, args.asOfDate);
+  const asOfDate = flag(args, "as-of", "asOf", "asOfDate");
+  const dash = await Core.getDashboardData(cycle.id, week, asOfDate);
   if (!dash) throw new Error("No cycle data found.");
   if (ctx.json) return emit(ctx, "", { instance, dashboard: dash });
   const pct = (n: number) => `${Math.round(n * 100)}%`;

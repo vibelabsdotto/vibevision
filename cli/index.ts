@@ -52,12 +52,18 @@ GOALS & LAGS
 TACTICS
   vibevision tactics                          list all tactics (plan, goal, weeks)
   vibevision tactic add --goal <id> --title "…" [--tracking quantity|boolean|duration]
-               [--recurrence daily|weekdays|times_per_week|once]
+               [--recurrence daily|weekdays|times_per_week|once] [--style toggle|occurrence|volume]
                [--target 5] [--count 3] [--unit pieces] [--week 1] [--starts-week 1] [--ends-week 4]
+               (style default: boolean×daily|weekdays→toggle, boolean×times_per_week|once→occurrence,
+                quantity|duration→volume; contradictions are errors; see "tactic add --help" for examples)
 
 DAILY OPERATION
   vibevision today                            today's due tactics + summary
+               (--json: rows carry executionStyle, todayKind incl. "pool", todayTarget null for pool,
+                and weekRemaining — BREAKING vs earlier builds)
   vibevision log entry --tactic <id> [--value 2] [--note "…"] [--date 2026-09-02|today]
+               (quantity without --value logs 1; duration requires --value;
+                occurrence needs a positive whole --value; see "log entry --help" for details)
   vibevision log complete --tactic <id>
   vibevision log morning [--one-thing "…"] [--stress 3] [--date …]
   vibevision log evening [--agency 4] [--stress 3] [--wins "…"] [--avoidance "…"]

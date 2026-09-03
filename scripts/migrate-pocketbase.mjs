@@ -143,6 +143,7 @@ const COLLECTIONS = [
       { type: "text", name: "type", required: true },
       { type: "select", name: "trackingType", values: ["boolean", "quantity", "duration"], maxSelect: 1, required: true },
       { type: "select", name: "recurrenceType", values: ["daily", "weekdays", "times_per_week", "once"], maxSelect: 1, required: true },
+      { type: "select", name: "executionStyle", values: ["toggle", "occurrence", "volume"], maxSelect: 1, required: false },
       { type: "number", name: "recurrenceCount", required: false },
       { type: "number", name: "targetValue", required: false },
       { type: "text", name: "unit", required: true },
@@ -229,7 +230,9 @@ const COLLECTIONS = [
       { name: "date", type: "text" },
       { name: "value", type: "number", required: false },
       { name: "completed", type: "bool", required: false },
-      { name: "note", type: "text" }
+      { name: "note", type: "text" },
+      { name: "created", type: "autodate", onCreate: true },
+      { name: "updated", type: "autodate", onCreate: true, onUpdate: true }
     ],
     indexes: "CREATE INDEX idx_tactic_entries_cycle_week ON tactic_entries (cycle, weekNumber)"
   },

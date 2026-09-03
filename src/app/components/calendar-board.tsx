@@ -139,6 +139,12 @@ export function CalendarBoard({
     const activeId = String(event.active.id);
     if (activeId.startsWith("new:")) {
       const tacticId = activeId.slice("new:".length);
+      const item = backlog.find((entry) => entry.tacticId === tacticId);
+      const style = item?.executionStyle ?? (item?.trackingType === "boolean" ? "toggle" : undefined);
+      if (style === "toggle") {
+        setError("Toggles can't be scheduled");
+        return;
+      }
       runAction(() => addBlockAction({ tacticId, date: overId }));
       return;
     }

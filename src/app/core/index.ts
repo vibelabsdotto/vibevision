@@ -337,6 +337,54 @@ export type TrackStatus = "on_track" | "warning" | "off_track";
 export type TrackingType = "boolean" | "quantity" | "duration";
 export type RecurrenceType = "daily" | "weekdays" | "times_per_week" | "once";
 
+export type ExecutionStyle = "toggle" | "occurrence" | "volume";
+
+function isExecutionStyle(value: unknown): value is ExecutionStyle {
+  return value === "toggle" || value === "occurrence" || value === "volume";
+}
+
+/** Derived style when no (valid) explicit executionStyle is stored — resolved lazily, never backfilled. */
+function deriveExecutionStyle(plan: TacticPlan): ExecutionStyle {
+  if (plan.trackingType === "boolean") {
+    return plan.recurrenceType === "daily" || plan.recurrenceType === "weekdays" ? "toggle" : "occurrence";
+  }
+  return "volume";
+}
+
+function isStyleValidForTracking(style: ExecutionStyle, trackingType: string, plan: TacticPlan): boolean {
+  switch (style) {
+    case "toggle":
+      return trackingType === "boolean";
+    case "occurrence":
+      // boolean always; quantity only for whole-count ("quantity-integer") targets
+      return trackingType === "boolean" || (trackingType === "quantity" && Number.isInteger(plan.targetValue));
+    case "volume":
+      return trackingType === "quantity" || trackingType === "duration";
+  }
+}
+
+/**
+ * Explicit tactic.executionStyle wins IF valid for the trackingType
+ * (toggle⇔boolean, occurrence⇔boolean|quantity-integer, volume⇔quantity|duration).
+ * Contradiction → throw with { strict: true } (write paths), ignore + derive otherwise (read paths).
+ */
+export function resolveExecutionStyle(
+  plan: TacticPlan,
+  tactic?: { executionStyle?: string | null; trackingType?: string } | null,
+  opts?: { strict?: boolean }
+): ExecutionStyle {
+  const raw = tactic?.executionStyle;
+  if (isExecutionStyle(raw)) {
+    const trackingType = tactic?.trackingType ?? plan.trackingType;
+    if (isStyleValidForTracking(raw, trackingType, plan)) return raw;
+    if (opts?.strict) {
+      throw new Error(`executionStyle "${raw}" contradicts trackingType "${trackingType}"`);
+    }
+    return deriveExecutionStyle(plan);
+  }
+  return deriveExecutionStyle(plan);
+}
+
 export type TacticPlan = {
   trackingType: TrackingType;
   recurrenceType: RecurrenceType;
@@ -368,6 +416,7 @@ export type TacticWeekScore = {
   recurrenceType: string;
   recurrenceCount: number;
   targetValue: number;
+  executionStyle: ExecutionStyle;
 };
 
 type LegacyTacticLike = {
@@ -382,10 +431,19 @@ type LegacyTacticLike = {
   targetPerWeek: number | null;
   targetPerDay: number | null;
   unit: string;
+  executionStyle?: string | null;
 };
 
-export function resolveTacticPlan(tactic: LegacyTacticLike): TacticPlan {
+export function resolveTacticPlan(tactic: LegacyTacticLike, opts?: { strict?: boolean }): TacticPlan {
   if (tactic.trackingType && tactic.recurrenceType) {
+    if (opts?.strict) {
+      if (tactic.trackingType !== "boolean" && tactic.trackingType !== "quantity" && tactic.trackingType !== "duration") {
+        throw new Error(`Unknown trackingType: ${tactic.trackingType}`);
+      }
+      if (tactic.recurrenceType !== "daily" && tactic.recurrenceType !== "weekdays" && tactic.recurrenceType !== "times_per_week" && tactic.recurrenceType !== "once") {
+        throw new Error(`Unknown recurrenceType: ${tactic.recurrenceType}`);
+      }
+    }
     return {
       trackingType: tactic.trackingType as TrackingType,
       recurrenceType: tactic.recurrenceType as RecurrenceType,
@@ -408,6 +466,9 @@ export function resolveTacticPlan(tactic: LegacyTacticLike): TacticPlan {
         ? { trackingType: "boolean", recurrenceType: "daily", recurrenceCount: 1, targetValue: 1, unit: tactic.unit }
         : { trackingType: "boolean", recurrenceType: "times_per_week", recurrenceCount: Math.max(1, Number(tactic.targetPerWeek ?? 1)), targetValue: 1, unit: tactic.unit };
     default:
+      // Silent default: snapshot reads must stay parseable (v1, no v2 yet).
+      // Write paths call resolveTacticPlan(tactic, { strict: true }) and throw here instead.
+      if (opts?.strict) throw new Error(`Unknown tactic type: ${tactic.type}`);
       return { trackingType: "boolean", recurrenceType: "times_per_week", recurrenceCount: 1, targetValue: 1, unit: tactic.unit };
   }
 }
@@ -462,8 +523,27 @@ export function isDueToday(plan: TacticPlan, date: string, weeklyRemaining: numb
 }
 
 export function getActualProgress(plan: TacticPlan, entries: TacticEntryValue[]) {
-  if (plan.trackingType === "boolean") {
-    return Math.max(0, entries.reduce((sum, entry) => sum + (entry.completed || entry.value > 0 ? 1 : 0), 0));
+  const style = deriveExecutionStyle(plan);
+  if (style === "toggle") {
+    // One done-day counts once: a double-complete on the same date no longer inflates.
+    const doneDates = new Set<string>();
+    let undated = 0;
+    for (const entry of entries) {
+      if (!(entry.completed || entry.value > 0)) continue;
+      if (entry.date) doneDates.add(entry.date);
+      else undated += 1;
+    }
+    return doneDates.size + undated;
+  }
+  if (style === "occurrence" && plan.trackingType === "boolean") {
+    // Whole occurrences; legacy boolean completes (value 0 + completed) still count 1.
+    return Math.max(
+      0,
+      entries.reduce(
+        (sum, entry) => sum + (entry.completed || entry.value > 0 ? Math.max(1, Number(entry.value)) : Number(entry.value)),
+        0
+      )
+    );
   }
   return Math.max(0, entries.reduce((sum, entry) => sum + Number(entry.value), 0));
 }
@@ -484,6 +564,7 @@ export type Tactic = {
   recurrenceCount: number;
   targetValue: number;
   unit: string;
+  executionStyle?: string;
   targetPerWeek: number | null;
   targetPerDay: number | null;
   scoringWeight: number;
@@ -504,6 +585,8 @@ function toTactic(record: Record<string, unknown>): Tactic {
     recurrenceCount: Number(record.recurrenceCount),
     targetValue: Number(record.targetValue),
     unit: String(record.unit),
+    // Unvalidated string at the boundary — validated in resolveExecutionStyle.
+    executionStyle: (record.executionStyle as string) || undefined,
     targetPerWeek: record.targetPerWeek === "" || record.targetPerWeek === null ? null : Number(record.targetPerWeek),
     targetPerDay: record.targetPerDay === "" || record.targetPerDay === null ? null : Number(record.targetPerDay),
     scoringWeight: Number(record.scoringWeight),
@@ -638,6 +721,23 @@ export async function getTactic(tacticId: string): Promise<Tactic | null> {
   return tactic ? toTactic(tactic) : null;
 }
 
+/** Pure entry-value guard matrix (used by addTacticEntry, unit-tested directly). */
+export function resolveTacticEntryValue(plan: TacticPlan, style: ExecutionStyle, value?: number): number {
+  if (style === "occurrence") {
+    const effective = value ?? 1;
+    if (!Number.isInteger(effective) || effective <= 0) {
+      throw new Error(`occurrence tactics need a positive whole value (got ${String(value)})`);
+    }
+    return effective;
+  }
+  if (plan.trackingType === "quantity") return value ?? 1;
+  if (plan.trackingType === "duration") {
+    if (value === undefined || value === null) throw new Error("duration tactics need a value (minutes)");
+    return value;
+  }
+  return value ?? 1;
+}
+
 export async function addTacticEntry(input: {
   tacticId: string;
   cycleId?: string;
@@ -654,8 +754,9 @@ export async function addTacticEntry(input: {
   const date = input.date === "today" || !input.date ? todayDateString() : input.date;
   const weekNumber = input.weekNumber ?? (await getCurrentWeekNumber(cycleId, date));
   if (!weekNumber) throw new Error("Date is not inside the cycle");
-  const plan = resolveTacticPlan(tactic);
-  const entryValue = input.value ?? (plan.trackingType === "boolean" ? 1 : 0);
+  const plan = resolveTacticPlan(tactic, { strict: true });
+  const style = resolveExecutionStyle(plan, tactic, { strict: true });
+  const entryValue = resolveTacticEntryValue(plan, style, input.value);
   const completed = input.completed ?? (plan.trackingType === "boolean" ? entryValue > 0 : false);
   const created = await pb.collection("tactic_entries").create({
     tactic: input.tacticId,
@@ -840,7 +941,7 @@ function getScoringCutoffDate(
   return getPreviousDate(asOfDate);
 }
 
-function getPlannedTargetForDate(params: {
+export function getPlannedTargetForDate(params: {
   plan: TacticPlan;
   fullWeekPlanned: number;
   blocks: Array<{ date: string; plannedValue: number }>;
@@ -865,6 +966,29 @@ function getPlannedTargetForDate(params: {
   }
 
   const elapsedDays = getElapsedDaysInWeek(weekStartDate, scoringCutoffDate);
+  const style = deriveExecutionStyle(plan);
+  if (style === "toggle") {
+    switch (plan.recurrenceType) {
+      case "daily":
+        return plan.targetValue * elapsedDays;
+      case "weekdays":
+        return plan.targetValue * getElapsedWeekdaysInWeek(weekStartDate, scoringCutoffDate);
+      default:
+        return fullWeekPlanned;
+    }
+  }
+  if (style === "occurrence") {
+    // Floor pace for flexible weekly pools (no prorata fractions).
+    switch (plan.recurrenceType) {
+      case "times_per_week":
+        return Math.floor(fullWeekPlanned * (elapsedDays / 7));
+      case "once":
+        return fullWeekPlanned;
+      default:
+        return fullWeekPlanned;
+    }
+  }
+  // Volume keeps the exact prorata pace.
   switch (plan.recurrenceType) {
     case "daily":
       return plan.targetValue * elapsedDays;
@@ -942,6 +1066,14 @@ export async function getWeekScore(cycleId: string, weekNumber: number, options?
   } satisfies WeekScore;
 }
 
+/** Pace status for occurrence pools: actual vs floor(N * elapsed/7). Nothing due yet → on_track. */
+function occurrencePaceStatus(weekTarget: number, actual: number, weekStartDate: string | null, scoringCutoffDate: string): TrackStatus {
+  if (!weekStartDate) return statusFromScore(weekTarget > 0 ? Math.min(actual / weekTarget, 1) : actual > 0 ? 1 : 0);
+  const paceFloor = Math.floor(weekTarget * (getElapsedDaysInWeek(weekStartDate, scoringCutoffDate) / 7));
+  if (paceFloor <= 0) return "on_track";
+  return statusFromScore(Math.min(actual / paceFloor, 1));
+}
+
 /** Pure reimplementation of getWeekScore's per-tactic reduce over pre-fetched rows. */
 function scoreTacticsForWeek(input: {
   weekNumber: number;
@@ -968,7 +1100,9 @@ function scoreTacticsForWeek(input: {
       ? true
       : isTacticActiveInWeek(tactic, weekNumber, schedule ? { required: Boolean(schedule.required) } : null);
     if (!activeInWeek) return acc;
+    // Read path (live rows AND v1 snapshots): silent default, contradictions derive.
     const plan = resolveTacticPlan(tactic);
+    const style = resolveExecutionStyle(plan, tactic);
     const fullWeekPlanned = Number(
       schedule?.plannedTarget ??
         (plan.recurrenceType === "once"
@@ -992,7 +1126,26 @@ function scoreTacticsForWeek(input: {
     }
     const tacticEntriesForWeek = entries.filter((entry) => entry.tacticId === tactic.id);
     const actual = getActualProgress(plan, tacticEntriesForWeek);
-    const score = getTacticExecutionScore(plan, planned, actual);
+    // Toggle: min(doneDueDays/dueDaysElapsed, 1) — actual is already clamped per date.
+    // Occurrence: min(actual/N, 1) with pace status vs floor(N*elapsed/7). Volume: unchanged.
+    const score =
+      style === "occurrence"
+        ? fullWeekPlanned > 0
+          ? Math.min(actual / fullWeekPlanned, 1)
+          : actual > 0
+            ? 1
+            : 0
+        : style === "toggle"
+          ? planned > 0
+            ? Math.min(actual / planned, 1)
+            : actual > 0
+              ? 1
+              : 0
+          : getTacticExecutionScore(plan, planned, actual);
+    const tacticStatus =
+      style === "occurrence"
+        ? occurrencePaceStatus(fullWeekPlanned, actual, weekStartDate, scoringCutoffDate)
+        : statusFromScore(score);
     acc.push({
       tacticId: tactic.id,
       tacticTitle: tactic.title,
@@ -1003,12 +1156,13 @@ function scoreTacticsForWeek(input: {
       actual,
       score,
       weight: Number(tactic.scoringWeight),
-      status: statusFromScore(score),
+      status: tacticStatus,
       unit: tactic.unit,
       trackingType: plan.trackingType,
       recurrenceType: plan.recurrenceType,
       recurrenceCount: plan.recurrenceCount,
-      targetValue: plan.targetValue
+      targetValue: plan.targetValue,
+      executionStyle: style
     });
     return acc;
   }, []);
@@ -1161,6 +1315,7 @@ export type WeekSnapshotTactic = {
   recurrenceCount: number;
   targetValue: number;
   unit: string;
+  executionStyle?: string | null;
   targetPerWeek: number | null;
   targetPerDay: number | null;
   scoringWeight: number;
@@ -1274,6 +1429,7 @@ export async function captureWeekSnapshot(cycleId: string, weekNumber: number) {
       recurrenceCount: tactic.recurrenceCount,
       targetValue: tactic.targetValue,
       unit: tactic.unit,
+      executionStyle: tactic.executionStyle ?? null,
       targetPerWeek: tactic.targetPerWeek,
       targetPerDay: tactic.targetPerDay,
       scoringWeight: tactic.scoringWeight,
@@ -1805,12 +1961,15 @@ export type TodayTacticProgress = TacticWeekScore & {
   remaining: number;
   isComplete: boolean;
   todayActual: number;
-  todayTarget: number;
+  // null for pool rows (occurrence): the actionable number is weekRemaining. --json BREAKING vs earlier builds.
+  todayTarget: number | null;
   todayRemaining: number;
   isTodayComplete: boolean;
   dueToday: boolean;
-  todayKind: "scheduled" | "recurring" | "unscheduled";
+  todayKind: "scheduled" | "recurring" | "unscheduled" | "pool";
   todayLabel: string;
+  weekRemaining: number;
+  weekTarget: number;
   scheduledBlocks: Array<{
     id: string;
     date: string;
@@ -1857,7 +2016,7 @@ type CalendarBlockRow = {
 type DashboardTacticRow = {
   tactic: Pick<
     WeekSnapshotTactic,
-    "id" | "title" | "goalId" | "trackingType" | "recurrenceType" | "recurrenceCount" | "targetValue" | "scoringWeight" | "unit"
+    "id" | "title" | "goalId" | "trackingType" | "recurrenceType" | "recurrenceCount" | "targetValue" | "scoringWeight" | "unit" | "executionStyle"
   >;
   goalTitle: string;
 };
@@ -1880,7 +2039,14 @@ function mergeTodayScoreRows(params: {
   const mergedRows = [...params.scoreRows];
   const scoreIds = new Set(params.scoreRows.map((row) => row.tacticId));
 
-  for (const tacticId of new Set(params.todayBlocks.map((block) => block.tacticId))) {
+  // Explicit calendar blocks for the week override schedule required:false:
+  // a block is newer, specific intent, so the tactic becomes visible this week
+  // even when the schedule row says it is not required.
+  const blockedTacticIds = new Set([
+    ...params.todayBlocks.map((block) => block.tacticId),
+    ...params.weekBlocks.map((block) => block.tacticId)
+  ]);
+  for (const tacticId of blockedTacticIds) {
     if (scoreIds.has(tacticId)) continue;
     const tacticRow = params.tacticRows.find((row) => row.tactic.id === tacticId);
     if (!tacticRow) continue;
@@ -1891,6 +2057,7 @@ function mergeTodayScoreRows(params: {
       targetValue: Number(tacticRow.tactic.targetValue ?? 1),
       unit: tacticRow.tactic.unit
     };
+    const style = resolveExecutionStyle(plan, tacticRow.tactic);
     const tacticEntries = params.entries.filter((entry) => entry.tacticId === tacticId);
     const fullWeekPlanned = params.weekBlocks
       .filter((block) => block.tacticId === tacticId)
@@ -1911,14 +2078,15 @@ function mergeTodayScoreRows(params: {
       trackingType: plan.trackingType,
       recurrenceType: plan.recurrenceType,
       recurrenceCount: plan.recurrenceCount,
-      targetValue: plan.targetValue
+      targetValue: plan.targetValue,
+      executionStyle: style
     });
   }
 
   return mergedRows;
 }
 
-function buildTodayTactics(
+export function buildTodayTactics(
   scores: TacticWeekScore[],
   entries: TacticEntryValue[],
   date: string,
@@ -1948,8 +2116,61 @@ function buildTodayTactics(
         note: block.note
       }));
       const scheduledWeekBlocks = blocksWeekByTactic[score.tacticId] ?? [];
+      const style: ExecutionStyle = isExecutionStyle(score.executionStyle)
+        ? score.executionStyle
+        : deriveExecutionStyle(plan);
+      const weekTarget = score.fullWeekPlanned;
+      const remaining = Math.max(weekTarget - score.actual, 0);
+      const weekRemaining = remaining;
+      const isComplete = remaining === 0;
+
+      if (style === "toggle") {
+        const todayActual = getTodayProgress(plan, tacticEntriesForWeek, date);
+        const isDueDay =
+          plan.recurrenceType === "daily" ? true : plan.recurrenceType === "weekdays" ? isWeekdayDate(date) : remaining > 0;
+        const active = weekTarget > 0 || score.actual > 0;
+        return {
+          ...score,
+          planned: weekTarget,
+          remaining,
+          isComplete,
+          todayActual,
+          todayTarget: 1,
+          todayRemaining: Math.max(1 - todayActual, 0),
+          isTodayComplete: todayActual >= 1,
+          dueToday: active && isDueDay && todayActual < 1,
+          todayKind: "recurring",
+          todayLabel: "Recurring today",
+          weekRemaining,
+          weekTarget,
+          scheduledBlocks
+        } satisfies TodayTacticProgress;
+      }
+
+      if (style === "occurrence") {
+        // Pool: no daily target (todayTarget null) — the week remainder is actionable.
+        // todayActual carries the week actual so mid-week progress stays visible.
+        const dueToday = (weekTarget > 0 || score.actual > 0) && weekRemaining > 0;
+        return {
+          ...score,
+          planned: weekTarget,
+          remaining,
+          isComplete,
+          todayActual: score.actual,
+          todayTarget: null,
+          todayRemaining: weekRemaining,
+          isTodayComplete: weekTarget > 0 ? score.actual >= weekTarget : score.actual > 0,
+          dueToday,
+          todayKind: "pool",
+          todayLabel: `${formatAmount(weekRemaining)} von ${formatAmount(weekTarget)} offen`,
+          weekRemaining,
+          weekTarget,
+          scheduledBlocks
+        } satisfies TodayTacticProgress;
+      }
+
+      // Volume: current behavior (scheduled blocks or unscheduled pool).
       const todayActual = getTodayProgress(plan, tacticEntriesForWeek, date);
-      const remaining = Math.max(score.fullWeekPlanned - score.actual, 0);
       const futureScheduledTotal = scheduledWeekBlocks
         .filter((block) => block.date > date)
         .reduce((sum, block) => sum + Number(block.plannedValue), 0);
@@ -1992,6 +2213,8 @@ function buildTodayTactics(
         dueToday,
         todayKind,
         todayLabel,
+        weekRemaining,
+        weekTarget,
         scheduledBlocks
       } satisfies TodayTacticProgress;
     })
@@ -2253,4 +2476,15 @@ export async function listBacklogTactics(cycleId: string, from: string, to: stri
 export async function getCalendarBlock(blockId: string) {
   const record = await pb.collection("tactic_calendar_blocks").getOne(blockId).catch(() => null);
   return record ? toBlock(record) : null;
+}
+
+export async function undoLatestTacticEntry(tacticId: string, date: string) {
+  const entries = await pb.collection("tactic_entries").getFullList({
+    filter: pb.filter("tactic = {:t} && date = {:d}", { t: tacticId, d: date }),
+    sort: "-created"
+  });
+  const latest = entries[0];
+  if (!latest) return null;
+  await pb.collection("tactic_entries").delete(latest.id);
+  return latest.id as string;
 }

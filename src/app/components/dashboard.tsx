@@ -2,8 +2,23 @@ import Link from "next/link";
 
 import { EmptyState, MetricCard, ProgressBar, SectionHeader, StatusBadge, surfaceClasses } from "@/app/components/ui";
 import { TacticStepper } from "@/app/components/tactic-stepper";
-import { getDashboardData, getOverallScore, formatAmount, formatPercent } from "@/app/core";
+import { getDashboardData, getOverallScore, formatAmount, formatPercent, type TodayTacticProgress } from "@/app/core";
 import { requireAuth } from "@/app/lib/auth";
+
+type ExecutionStyle = "toggle" | "occurrence" | "volume";
+
+function executionStyleOf(score: TodayTacticProgress): ExecutionStyle {
+  const provided = (score as Partial<Record<"executionStyle", unknown>>).executionStyle;
+  if (provided === "toggle" || provided === "occurrence" || provided === "volume") return provided;
+  return score.trackingType === "boolean" ? "toggle" : "volume";
+}
+
+function weekPoolOf(score: TodayTacticProgress): { remaining: number; target: number } {
+  const row = score as TodayTacticProgress & Partial<Record<"weekRemaining" | "weekTarget", unknown>>;
+  const remaining = typeof row.weekRemaining === "number" ? row.weekRemaining : score.todayRemaining;
+  const target = typeof row.weekTarget === "number" ? row.weekTarget : score.planned;
+  return { remaining, target };
+}
 
 export async function DashboardView({ cycleId }: { cycleId?: string }) {
   await requireAuth();
@@ -106,7 +121,30 @@ export async function DashboardView({ cycleId }: { cycleId?: string }) {
           </div>
 
           <div className="space-y-3">
-            {data.todayTactics.slice(0, 5).map((score) => (
+            {data.todayTactics.slice(0, 5).map((score) => {
+              if (executionStyleOf(score) === "occurrence") {
+                const pool = weekPoolOf(score);
+                return (
+                  <div className="rounded-[16px] border border-border bg-surface-2/50 p-4" key={score.tacticId}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-medium">{score.tacticTitle}</p>
+                        <p className="mt-1 text-sm text-ink-3">
+                          {score.todayLabel} · {score.goalTitle}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <TacticStepper tacticId={score.tacticId} unit={score.unit} />
+                      </div>
+                    </div>
+                    <p className="mt-2 text-sm text-ink-3">
+                      {formatAmount(pool.remaining)} von {formatAmount(pool.target)} offen
+                    </p>
+                  </div>
+                );
+              }
+              const todayTarget = score.todayTarget ?? 0;
+              return (
               <div className="rounded-[16px] border border-border bg-surface-2/50 p-4" key={score.tacticId}>
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -117,19 +155,19 @@ export async function DashboardView({ cycleId }: { cycleId?: string }) {
                   </div>
                   {score.trackingType === "boolean" ? (
                     <span className="text-sm text-ink-2">
-                      {formatAmount(score.todayActual)}/{formatAmount(score.todayTarget)} {score.unit}
+                      {formatAmount(score.todayActual)}/{formatAmount(todayTarget)} {score.unit}
                     </span>
                   ) : (
                     <div className="flex shrink-0 items-center gap-2">
                       <TacticStepper tacticId={score.tacticId} unit={score.unit} />
                       <span className="text-sm text-ink-2">
-                        {formatAmount(score.todayActual)}/{formatAmount(score.todayTarget)} {score.unit}
+                        {formatAmount(score.todayActual)}/{formatAmount(todayTarget)} {score.unit}
                       </span>
                     </div>
                   )}
                 </div>
                 <div className="mt-3">
-                  <ProgressBar tone={score.isTodayComplete ? "teal" : "coral"} value={score.todayTarget > 0 ? score.todayActual / score.todayTarget : 0} />
+                  <ProgressBar tone={score.isTodayComplete ? "teal" : "coral"} value={todayTarget > 0 ? score.todayActual / todayTarget : 0} />
                 </div>
                 <p className="mt-2 text-sm text-ink-3">
                   {score.isTodayComplete
@@ -137,7 +175,8 @@ export async function DashboardView({ cycleId }: { cycleId?: string }) {
                     : `${score.trackingType === "boolean" ? score.todayRemaining : formatAmount(score.todayRemaining)} ${score.unit} left today.`}
                 </p>
               </div>
-            ))}
+              );
+            })}
             {!data.todayTactics.length ? <p className="text-sm text-ink-3">No tactics are due today.</p> : null}
           </div>
 
