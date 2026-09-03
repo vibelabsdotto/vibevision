@@ -872,9 +872,9 @@ function getPlannedTargetForDate(params: {
   }
 }
 
-export async function getWeekScore(cycleId: string, weekNumber: number, options?: { asOfDate?: string; includeAsOfDate?: boolean }) {
+export async function getWeekScore(cycleId: string, weekNumber: number, options?: { asOfDate?: string; includeAsOfDate?: boolean; snapshotRow?: Awaited<ReturnType<typeof getWeekSnapshot>> }) {
   const asOfDate = options?.asOfDate ?? todayDateString();
-  const snapshotRow = await getWeekSnapshot(cycleId, weekNumber);
+  const snapshotRow = options?.snapshotRow ?? (await getWeekSnapshot(cycleId, weekNumber));
   const snapshot = snapshotRow?.snapshot;
   const weekRow =
     snapshot?.week ??
@@ -911,14 +911,55 @@ export async function getWeekScore(cycleId: string, weekNumber: number, options?
     filter: pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycleId, w: weekNumber })
   });
   const entries = entryRecordsToValues(entryRecords);
-  const scores = tacticRows.reduce<TacticWeekScore[]>((acc, { tactic, goalTitle }) => {
+  const scores = scoreTacticsForWeek({
+    weekNumber,
+    asOfDate,
+    includeAsOfDate: options?.includeAsOfDate,
+    tacticRows,
+    scheduleRows,
+    calendarBlocks,
+    entries,
+    weekStartDate,
+    weekEndDate,
+    hasSnapshot: Boolean(snapshot)
+  });
+
+  const weeklyScore = scores.length > 0 ? scores.reduce((sum, score) => sum + score.score, 0) / scores.length : 0;
+  const goalScores = goalScoresFromTacticScores(scores);
+
+  return {
+    cycleId,
+    weekNumber,
+    weeklyScore,
+    status: statusFromScore(weeklyScore),
+    goalScores,
+    tacticScores: scores
+  } satisfies WeekScore;
+}
+
+/** Pure reimplementation of getWeekScore's per-tactic reduce over pre-fetched rows. */
+function scoreTacticsForWeek(input: {
+  weekNumber: number;
+  asOfDate: string;
+  includeAsOfDate?: boolean;
+  tacticRows: Array<{ tactic: Tactic; goalTitle: string }>;
+  scheduleRows: Array<{ tacticId?: unknown; weekNumber?: unknown; plannedTarget?: unknown; required?: unknown }>;
+  calendarBlocks: Array<{ tacticId: string; date: string; plannedValue: number }>;
+  entries: TacticEntryValue[];
+  weekStartDate: string | null;
+  weekEndDate: string | null;
+  hasSnapshot: boolean;
+}): TacticWeekScore[] {
+  const { weekNumber, asOfDate, includeAsOfDate, tacticRows, scheduleRows, calendarBlocks, entries, weekStartDate, weekEndDate, hasSnapshot } = input;
+  const scoringCutoffDate = getScoringCutoffDate(weekStartDate, weekEndDate, asOfDate, { includeAsOfDate });
+  return tacticRows.reduce<TacticWeekScore[]>((acc, { tactic, goalTitle }) => {
     const schedule = scheduleRows.find(
       (row) => {
         const tacticIdValue = (row as unknown as { tactic?: unknown }).tactic ?? row.tacticId;
         return String(tacticIdValue ?? "") === tactic.id && Number(row.weekNumber) === weekNumber;
       }
     );
-    const activeInWeek = snapshot
+    const activeInWeek = hasSnapshot
       ? true
       : isTacticActiveInWeek(tactic, weekNumber, schedule ? { required: Boolean(schedule.required) } : null);
     if (!activeInWeek) return acc;
@@ -966,9 +1007,10 @@ export async function getWeekScore(cycleId: string, weekNumber: number, options?
     });
     return acc;
   }, []);
+}
 
-  const weeklyScore = scores.length > 0 ? scores.reduce((sum, score) => sum + score.score, 0) / scores.length : 0;
-  const goalScores = Object.values(
+function goalScoresFromTacticScores(scores: TacticWeekScore[]) {
+  return Object.values(
     scores.reduce<Record<string, { goalId: string; goalTitle: string; total: number; count: number }>>((acc, score) => {
       acc[score.goalId] ??= { goalId: score.goalId, goalTitle: score.goalTitle, total: 0, count: 0 };
       acc[score.goalId].total += score.score;
@@ -981,15 +1023,6 @@ export async function getWeekScore(cycleId: string, weekNumber: number, options?
     score: row.count > 0 ? row.total / row.count : 0,
     status: statusFromScore(row.count > 0 ? row.total / row.count : 0)
   }));
-
-  return {
-    cycleId,
-    weekNumber,
-    weeklyScore,
-    status: statusFromScore(weeklyScore),
-    goalScores,
-    tacticScores: scores
-  } satisfies WeekScore;
 }
 
 export function getTacticExecutionScore(plan: TacticPlan, planned: number, actual: number) {
@@ -1002,19 +1035,103 @@ export function getTacticExecutionScore(plan: TacticPlan, planned: number, actua
 /**
  * Overall execution score across all weeks of a cycle that have started
  * (past + current). Future weeks are excluded — they have no data yet.
+ *
+ * Batch variant: scores every started week from four shared fetches
+ * (cycle_weeks, tactics, tactic_schedules, tactic_entries) instead of six
+ * requests per week — the dashboard went from ~48 sequential round-trips
+ * to four.
  */
 export async function getOverallScore(cycleId: string, currentWeek: number): Promise<{ score: number; status: TrackStatus; weeksScored: number }> {
   const weeks = await getCycleWeeks(cycleId);
   const started = weeks.filter((week) => week.weekNumber <= currentWeek);
   if (!started.length) return { score: 0, status: "off_track", weeksScored: 0 };
-  // sequential — the PB SDK auto-cancels parallel identical requests on one
-  // client, and every getWeekScore fetches unfiltered tactic_schedules
-  const scores: Awaited<ReturnType<typeof getWeekScore>>[] = [];
-  for (const week of started) {
-    scores.push(await getWeekScore(cycleId, week.weekNumber));
+
+  const asOfDate = todayDateString();
+  const [tacticRows, scheduleRecords, entryRecords] = (await Promise.all([
+    listTactics(cycleId),
+    pb.collection("tactic_schedules").getFullList(),
+    pb.collection("tactic_entries").getFullList({ filter: pb.filter("cycle = {:c}", { c: cycleId }) })
+  ])) as unknown as [Tactic[], Array<Record<string, unknown>>, Array<Record<string, unknown>>];
+  // regroup entries per weekNumber via the raw records (they carry weekNumber)
+  const entriesPerWeek = new Map<number, TacticEntryValue[]>();
+  for (const record of entryRecords) {
+    const weekNumber = Number(record.weekNumber);
+    if (!Number.isFinite(weekNumber)) continue;
+    const list = entriesPerWeek.get(weekNumber) ?? [];
+    list.push({ tacticId: String(record.tactic), date: record.date ? String(record.date) : null, value: Number(record.value), completed: Boolean(record.completed) });
+    entriesPerWeek.set(weekNumber, list);
   }
-  const score = scores.reduce((sum, row) => sum + row.weeklyScore, 0) / scores.length;
-  return { score, status: statusFromScore(score), weeksScored: scores.length };
+
+  let total = 0;
+  for (const week of started) {
+    const weekEntries = entriesPerWeek.get(week.weekNumber) ?? [];
+    const scores = scoreTacticsForWeek({
+      weekNumber: week.weekNumber,
+      asOfDate,
+      tacticRows: tacticRows.map((tactic) => ({ tactic, goalTitle: "Overall" })),
+      scheduleRows: scheduleRecords,
+      calendarBlocks: [],
+      entries: weekEntries,
+      weekStartDate: week.startDate,
+      weekEndDate: week.endDate,
+      hasSnapshot: false
+    });
+    total += scores.length > 0 ? scores.reduce((sum, score) => sum + score.score, 0) / scores.length : 0;
+  }
+  const score = total / started.length;
+  return { score, status: statusFromScore(score), weeksScored: started.length };
+}
+
+/**
+ * Score every started week of a cycle in one batch: four fetches total
+ * (cycle_weeks via getCycleWeeks caller-side, tactics+expand, tactic_schedules,
+ * tactic_entries) instead of six requests per week. Returns WeekScore objects
+ * identical to getWeekScore's output (minus calendar-block precision — weeks
+ * are scored against the full weekly plan, which is the /weeks overview use case).
+ */
+export async function getWeekScoresBatch(cycleId: string, weekNumbers: number[]): Promise<Map<number, WeekScore>> {
+  const result = new Map<number, WeekScore>();
+  if (!weekNumbers.length) return result;
+
+  const asOfDate = todayDateString();
+  const [tacticRows, scheduleRecords, entryRecords] = (await Promise.all([
+    listTactics(cycleId),
+    pb.collection("tactic_schedules").getFullList(),
+    pb.collection("tactic_entries").getFullList({ filter: pb.filter("cycle = {:c}", { c: cycleId }) })
+  ])) as unknown as [Array<{ tactic: Tactic; goalTitle: string }>, Array<Record<string, unknown>>, Array<Record<string, unknown>>];
+
+  const entriesPerWeek = new Map<number, TacticEntryValue[]>();
+  for (const record of entryRecords) {
+    const weekNumber = Number(record.weekNumber);
+    if (!Number.isFinite(weekNumber)) continue;
+    const list = entriesPerWeek.get(weekNumber) ?? [];
+    list.push({ tacticId: String(record.tactic), date: record.date ? String(record.date) : null, value: Number(record.value), completed: Boolean(record.completed) });
+    entriesPerWeek.set(weekNumber, list);
+  }
+
+  for (const weekNumber of weekNumbers) {
+    const scores = scoreTacticsForWeek({
+      weekNumber,
+      asOfDate,
+      tacticRows,
+      scheduleRows: scheduleRecords,
+      calendarBlocks: [],
+      entries: entriesPerWeek.get(weekNumber) ?? [],
+      weekStartDate: null,
+      weekEndDate: null,
+      hasSnapshot: false
+    });
+    const weeklyScore = scores.length > 0 ? scores.reduce((sum, score) => sum + score.score, 0) / scores.length : 0;
+    result.set(weekNumber, {
+      cycleId,
+      weekNumber,
+      weeklyScore,
+      status: statusFromScore(weeklyScore),
+      goalScores: goalScoresFromTacticScores(scores),
+      tacticScores: scores
+    });
+  }
+  return result;
 }
 
 function entryRecordsToValues(records: Array<Record<string, unknown>>): TacticEntryValue[] {
@@ -1892,12 +2009,13 @@ export async function getDashboardData(cycleId?: string, weekNumber?: number, as
   if (!cycle) return null;
   const currentWeek = weekNumber ?? (await getCurrentWeekNumber(cycle.id, asOfDate)) ?? 1;
   const weeks = await getCycleWeeks(cycle.id);
-  const snapshot = (await getWeekSnapshot(cycle.id, currentWeek))?.snapshot;
+  const snapshotRow = await getWeekSnapshot(cycle.id, currentWeek);
+  const snapshot = snapshotRow?.snapshot;
   const goals = snapshot?.goals.map((goal) => ({ ...goal, cycleId: cycle.id })) ?? (await listGoals(cycle.id));
   const lags = snapshot
     ? snapshot.lagIndicators
     : (await pb.collection("lag_indicators").getFullList({ filter: pb.filter("goal.cycle = {:c}", { c: cycle.id }) })).map(toLag);
-  const score = await getWeekScore(cycle.id, currentWeek, { asOfDate });
+  const score = await getWeekScore(cycle.id, currentWeek, { asOfDate, snapshotRow });
   const tactics: DashboardTacticRow[] = snapshot
     ? snapshot.tactics.map((tactic) => ({
         tactic: { ...tactic, goalId: String(tactic.goalId) } as DashboardTacticRow["tactic"],

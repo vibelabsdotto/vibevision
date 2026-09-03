@@ -3,7 +3,7 @@ import {
   formatPercent,
   getCycleWeeks,
   getDashboardData,
-  getWeekScore,
+  getWeekScoresBatch,
   listCycles
 } from "@/app/core";
 import { requireAuth } from "@/app/lib/auth";
@@ -25,13 +25,14 @@ export default async function WeeksPage() {
     return <EmptyState title="No weeks" body="This cycle has no week data yet." />;
   }
   const currentWeek = dash?.currentWeek ?? null;
-  // score every week that has actually started (past + current); future weeks stay neutral
+  // score every week that has actually started (past + current); future weeks stay neutral.
+  // batch: 3 shared fetches for all weeks instead of 6 requests per week
   const scorable = weeks.filter((week) => (currentWeek ? week.weekNumber <= currentWeek : true));
-  // sequential — the PB SDK auto-cancels parallel identical requests on one client
-  const scored = [];
-  for (const week of scorable) {
-    scored.push({ week, score: await getWeekScore(cycle.id, week.weekNumber) });
-  }
+  const batch = await getWeekScoresBatch(
+    cycle.id,
+    scorable.map((week) => week.weekNumber)
+  );
+  const scored = scorable.map((week) => ({ week, score: batch.get(week.weekNumber)! }));
   const byWeek = new Map(scored.map((entry) => [entry.week.weekNumber, entry.score]));
   const active = dash ? cycle.id === dash.cycle.id : cycle.status === "active";
 
