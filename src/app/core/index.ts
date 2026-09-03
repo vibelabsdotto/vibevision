@@ -2213,3 +2213,44 @@ export async function listDailyLogs(cycleId: string, from: string, to: string): 
   });
   return records.map(toDailyLog);
 }
+
+// ---------------------------------------------------------------- calendar range query + backlog (appended)
+
+export async function listCalendarBlocksForRange(cycleId: string, from: string, to: string) {
+  validateDate(from);
+  validateDate(to);
+  const records = await pb.collection("tactic_calendar_blocks").getFullList({
+    filter: pb.filter("cycle = {:c} && date >= {:f} && date <= {:t}", { c: cycleId, f: from, t: to }),
+    sort: "date,startTime,id",
+    expand: "tactic,tactic.goal"
+  });
+  return records.map((record) => {
+    const tactic = record.expand?.tactic as Record<string, unknown> | undefined;
+    const goal = record.expand?.["tactic.goal"] as Record<string, unknown> | undefined;
+    return {
+      ...toBlock(record),
+      tacticTitle: String(tactic?.title ?? "Unknown"),
+      goalTitle: String(goal?.title ?? "Unknown")
+    };
+  });
+}
+
+export async function listBacklogTactics(cycleId: string, from: string, to: string) {
+  const rows = await listTactics(cycleId);
+  const blocks = await listCalendarBlocksForRange(cycleId, from, to);
+  const blockedTacticIds = new Set(blocks.map((block) => block.tacticId));
+  return rows
+    .filter(({ tactic }) => !blockedTacticIds.has(tactic.id))
+    .map(({ tactic, goalTitle }) => ({
+      id: tactic.id,
+      title: tactic.title,
+      goalTitle,
+      trackingType: tactic.trackingType,
+      unit: tactic.unit
+    }));
+}
+
+export async function getCalendarBlock(blockId: string) {
+  const record = await pb.collection("tactic_calendar_blocks").getOne(blockId).catch(() => null);
+  return record ? toBlock(record) : null;
+}

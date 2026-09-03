@@ -2,7 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 
-import { getActiveCycle, getTactic, listGoals, resolveTacticPlan, todayDateString } from "@/app/core";
+import { getActiveCycle, getCalendarBlock, getOccurrenceTarget, getTactic, listGoals, resolveTacticPlan, todayDateString } from "@/app/core";
+import {
+  addTacticCalendarBlock,
+  deleteTacticCalendarBlock,
+  moveTacticCalendarBlock
+} from "@/app/core";
 import { evening, morning } from "@/app/core/dailyLogs";
 import { addTacticEntry, completeTactic } from "@/app/core/tactics";
 import { requireAuth } from "@/app/lib/auth";
@@ -76,4 +81,45 @@ export async function stepEntryAction(formData: FormData) {
   revalidatePath("/");
   revalidatePath("/today");
   revalidatePath("/daily-logs");
+}
+
+async function assertBlockInActiveCycle(blockId: string) {
+  const block = await getCalendarBlock(blockId);
+  if (!block) throw new Error(`Block not found: ${blockId}`);
+  const active = await getActiveCycle();
+  if (!active) throw new Error("No active cycle");
+  if (block.cycleId !== active.id) throw new Error("Block is not in the active cycle");
+  return block;
+}
+
+export async function moveBlockAction(input: { blockId: string; toDate: string }) {
+  await requireAuth();
+  if (!input.blockId) throw new Error("Missing blockId");
+  if (!input.toDate) throw new Error("Missing toDate");
+  await assertBlockInActiveCycle(input.blockId);
+  const result = await moveTacticCalendarBlock({ blockId: input.blockId, toDate: input.toDate });
+  revalidatePath("/calendar");
+  return result;
+}
+
+export async function addBlockAction(input: { tacticId: string; date: string }) {
+  await requireAuth();
+  if (!input.tacticId) throw new Error("Missing tacticId");
+  if (!input.date) throw new Error("Missing date");
+  const tactic = await assertTacticInActiveCycle(input.tacticId);
+  const plan = resolveTacticPlan(tactic);
+  await addTacticCalendarBlock({
+    tacticId: input.tacticId,
+    date: input.date,
+    plannedValue: plan.trackingType === "boolean" ? undefined : getOccurrenceTarget(plan)
+  });
+  revalidatePath("/calendar");
+}
+
+export async function deleteBlockAction(input: { blockId: string }) {
+  await requireAuth();
+  if (!input.blockId) throw new Error("Missing blockId");
+  await assertBlockInActiveCycle(input.blockId);
+  await deleteTacticCalendarBlock(input.blockId);
+  revalidatePath("/calendar");
 }

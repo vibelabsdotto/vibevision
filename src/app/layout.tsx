@@ -49,6 +49,7 @@ export const viewport: Viewport = {
 const NAV = [
   { href: "/", label: "Dashboard" },
   { href: "/today", label: "Today" },
+  { href: "/calendar", label: "Calendar" },
   { href: "/daily-logs", label: "Daily Logs" },
   { href: "/weeks", label: "Weeks" },
   { href: "/cycles", label: "Cycles" }
@@ -104,7 +105,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             aria-label="Primary"
             className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-bg/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
           >
-            <div className="mx-auto grid max-w-md grid-cols-5">
+            <div className="mx-auto grid max-w-md grid-cols-6">
               {NAV.map((item) => (
                 <Link
                   className="px-2 py-3 text-center text-xs font-medium whitespace-nowrap text-ink-2 transition active:text-coral"
