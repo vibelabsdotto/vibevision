@@ -342,7 +342,7 @@ export function statusFromScore(score: number): TrackStatus {
 
 // ---------------------------------------------------------------- tactic types
 
-export type TrackStatus = "on_track" | "warning" | "off_track";
+export type TrackStatus = "on_track" | "warning" | "off_track" | "coming";
 
 export type TrackingType = "boolean" | "quantity" | "duration";
 export type RecurrenceType = "daily" | "weekdays" | "times_per_week" | "once";
@@ -422,6 +422,8 @@ export type TacticWeekScore = {
   weight: number;
   status: TrackStatus;
   unit: string;
+  /** Blocks scheduled in the scored week (0 when none / snapshot paths). */
+  scheduled?: number;
   trackingType: string;
   recurrenceType: string;
   recurrenceCount: number;
@@ -1084,6 +1086,34 @@ function occurrencePaceStatus(weekTarget: number, actual: number, weekStartDate:
   return statusFromScore(Math.min(actual / paceFloor, 1));
 }
 
+/**
+ * Schedule-aware weekly status override (pure, unit-tested).
+ * Returns null when the existing pace/score status should stand.
+ * Rules: nothing scheduled → null; nothing left → null; scheduled but
+ * untouched and every block still in the future → "coming"; otherwise
+ * actual vs due-by-now (scheduled dates <= asOf). Volume keeps its
+ * block-prorated score status (returns null past the coming check).
+ */
+export function resolveScheduledStatus(input: {
+  style: ExecutionStyle;
+  fullWeekPlanned: number;
+  planned: number;
+  actual: number;
+  scheduledDates: string[];
+  asOfDate: string;
+}): TrackStatus | null {
+  const { style, scheduledDates, asOfDate } = input;
+  if (scheduledDates.length === 0) return null;
+  const remaining = style === "toggle" ? input.planned - input.actual : input.fullWeekPlanned - input.actual;
+  if (remaining <= 0) return null;
+  const futureCount = scheduledDates.filter((date) => date > asOfDate).length;
+  if (input.actual <= 0 && futureCount === scheduledDates.length) return "coming";
+  if (style === "volume") return null;
+  const dueByNow = scheduledDates.length - futureCount;
+  if (input.actual >= dueByNow) return "on_track";
+  return input.actual > 0 ? "warning" : "off_track";
+}
+
 /** Pure reimplementation of getWeekScore's per-tactic reduce over pre-fetched rows. */
 function scoreTacticsForWeek(input: {
   weekNumber: number;
@@ -1152,10 +1182,16 @@ function scoreTacticsForWeek(input: {
               ? 1
               : 0
           : getTacticExecutionScore(plan, planned, actual);
-    const tacticStatus =
+    const baseStatus =
       style === "occurrence"
         ? occurrencePaceStatus(fullWeekPlanned, actual, weekStartDate, scoringCutoffDate)
         : statusFromScore(score);
+    const scheduledDates = calendarBlocks
+      .filter((block) => block.tacticId === tactic.id)
+      .map((block) => block.date)
+      .sort();
+    const tacticStatus =
+      resolveScheduledStatus({ style, fullWeekPlanned, planned, actual, scheduledDates, asOfDate }) ?? baseStatus;
     acc.push({
       tacticId: tactic.id,
       tacticTitle: tactic.title,
@@ -1167,6 +1203,7 @@ function scoreTacticsForWeek(input: {
       score,
       weight: Number(tactic.scoringWeight),
       status: tacticStatus,
+      scheduled: scheduledDates.length,
       unit: tactic.unit,
       trackingType: plan.trackingType,
       recurrenceType: plan.recurrenceType,
@@ -2045,6 +2082,7 @@ function mergeTodayScoreRows(params: {
   entries: TacticEntryValue[];
   todayBlocks: CalendarBlockRow[];
   weekBlocks: CalendarBlockRow[];
+  asOfDate: string;
 }) {
   const mergedRows = [...params.scoreRows];
   const scoreIds = new Set(params.scoreRows.map((row) => row.tacticId));
@@ -2072,6 +2110,10 @@ function mergeTodayScoreRows(params: {
     const fullWeekPlanned = params.weekBlocks
       .filter((block) => block.tacticId === tacticId)
       .reduce((sum, block) => sum + Number(block.plannedValue), 0);
+    const mergedScheduledDates = params.weekBlocks
+      .filter((block) => block.tacticId === tacticId)
+      .map((block) => block.date)
+      .sort();
 
     mergedRows.push({
       tacticId,
@@ -2083,7 +2125,16 @@ function mergeTodayScoreRows(params: {
       actual: getActualProgress(plan, tacticEntries),
       score: 0,
       weight: Number(tacticRow.tactic.scoringWeight),
-      status: "off_track",
+      status:
+        resolveScheduledStatus({
+          style,
+          fullWeekPlanned,
+          planned: 0,
+          actual: getActualProgress(plan, tacticEntries),
+          scheduledDates: mergedScheduledDates,
+          asOfDate: params.asOfDate
+        }) ?? "off_track",
+      scheduled: mergedScheduledDates.length,
       unit: tacticRow.tactic.unit,
       trackingType: plan.trackingType,
       recurrenceType: plan.recurrenceType,
@@ -2287,7 +2338,8 @@ export async function getDashboardData(cycleId?: string, weekNumber?: number, as
     tacticRows: tactics,
     entries: weekEntries,
     todayBlocks: normalizedTodayBlocks,
-    weekBlocks: calendarBlocksForWeek
+    weekBlocks: calendarBlocksForWeek,
+    asOfDate: today
   });
   const todayTactics = buildTodayTactics(
     todayScoreRows,
@@ -2468,19 +2520,50 @@ export async function listCalendarBlocksForRange(cycleId: string, from: string, 
   });
 }
 
-export async function listBacklogTactics(cycleId: string, from: string, to: string) {
+export type SchedulingItem = {
+  id: string;
+  title: string;
+  goalTitle: string;
+  executionStyle: ExecutionStyle;
+  /** Weekly target (pool size) for the reference week. */
+  weekTarget: number;
+  /** Blocks scheduled in the reference week. */
+  scheduled: number;
+  scheduledDates: string[];
+  trackingType: string;
+  unit: string;
+};
+
+/**
+ * Every ACTIVE tactic with its scheduling progress for a reference week —
+ * scheduled rows stay visible (marked) instead of disappearing, so the
+ * sidebar reads "X von N gescheduled" per tactic. Inactive tactics
+ * (retired dupes etc.) never show up here.
+ */
+export async function listSchedulingState(cycleId: string, weekStartISO: string, weekEndISO: string): Promise<SchedulingItem[]> {
   const rows = await listTactics(cycleId);
-  const blocks = await listCalendarBlocksForRange(cycleId, from, to);
-  const blockedTacticIds = new Set(blocks.map((block) => block.tacticId));
+  const blocks = await listCalendarBlocksForRange(cycleId, weekStartISO, weekEndISO);
   return rows
-    .filter(({ tactic }) => !blockedTacticIds.has(tactic.id))
-    .map(({ tactic, goalTitle }) => ({
-      id: tactic.id,
-      title: tactic.title,
-      goalTitle,
-      trackingType: tactic.trackingType,
-      unit: tactic.unit
-    }));
+    .filter(({ tactic }) => tactic.active !== false)
+    .map(({ tactic, goalTitle }) => {
+      const plan = resolveTacticPlan(tactic);
+      const dates = blocks
+        .filter((block) => block.tacticId === tactic.id)
+        .map((block) => block.date)
+        .sort();
+      return {
+        id: tactic.id,
+        title: tactic.title,
+        goalTitle,
+        executionStyle: resolveExecutionStyle(plan, tactic),
+        weekTarget: getPlannedWeeklyTarget(plan),
+        scheduled: dates.length,
+        scheduledDates: dates,
+        trackingType: tactic.trackingType,
+        unit: tactic.unit
+      };
+    })
+    .sort((a, b) => a.scheduled - b.scheduled || a.title.localeCompare(b.title));
 }
 
 export async function getCalendarBlock(blockId: string) {

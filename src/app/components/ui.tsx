@@ -21,13 +21,15 @@ export const inputClasses =
 const statusStyles: Record<string, string> = {
   on_track: "bg-teal/15 text-teal",
   warning: "bg-amber/15 text-amber",
-  off_track: "bg-error/15 text-error"
+  off_track: "bg-error/15 text-error",
+  coming: "bg-ink-2/10 text-ink-2"
 };
 
 const statusLabels: Record<string, string> = {
   on_track: "on track",
   warning: "warning",
-  off_track: "off track"
+  off_track: "off track",
+  coming: "coming"
 };
 
 export function StatusBadge({ status }: { status: string }) {
@@ -48,7 +50,9 @@ export function StatusBadge({ status }: { status: string }) {
                 ? "var(--amber)"
                 : status === "off_track"
                   ? "var(--error)"
-                  : "var(--ink-3)"
+                  : status === "coming"
+                    ? "var(--ink-2)"
+                    : "var(--ink-3)"
         }}
       />
       {label}

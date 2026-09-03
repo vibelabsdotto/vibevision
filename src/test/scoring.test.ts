@@ -10,6 +10,7 @@ import {
   isDueToday,
   isWeekdayDate,
   resolveExecutionStyle,
+  resolveScheduledStatus,
   resolveTacticEntryValue,
   resolveTacticPlan,
   statusFromScore,
@@ -335,5 +336,48 @@ describe("pool due rule", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].dueToday).toBe(false);
     expect(rows[0].isTodayComplete).toBe(true);
+  });
+});
+describe("resolveScheduledStatus", () => {
+  const base = {
+    style: "occurrence" as const,
+    fullWeekPlanned: 3,
+    planned: 1,
+    actual: 0,
+    scheduledDates: [] as string[],
+    asOfDate: "2026-09-03"
+  };
+  it("returns null when nothing is scheduled", () => {
+    expect(resolveScheduledStatus(base)).toBeNull();
+  });
+  it("returns coming when untouched and everything is in the future", () => {
+    expect(resolveScheduledStatus({ ...base, scheduledDates: ["2026-09-04", "2026-09-05"] })).toBe("coming");
+  });
+  it("returns null once the pool is full", () => {
+    expect(resolveScheduledStatus({ ...base, actual: 3, scheduledDates: ["2026-09-04"] })).toBeNull();
+  });
+  it("compares actual vs due-by-now for occurrence", () => {
+    expect(
+      resolveScheduledStatus({ ...base, scheduledDates: ["2026-09-01", "2026-09-03", "2026-09-05"] })
+    ).toBe("off_track");
+    expect(
+      resolveScheduledStatus({ ...base, actual: 2, scheduledDates: ["2026-09-01", "2026-09-03", "2026-09-05"] })
+    ).toBe("on_track");
+    expect(
+      resolveScheduledStatus({ ...base, actual: 1, scheduledDates: ["2026-09-01", "2026-09-03", "2026-09-05"] })
+    ).toBe("warning");
+  });
+  it("keeps volume on its score status (null) past the coming check", () => {
+    expect(
+      resolveScheduledStatus({ ...base, style: "volume", scheduledDates: ["2026-09-01"] })
+    ).toBeNull();
+    expect(
+      resolveScheduledStatus({ ...base, style: "volume", scheduledDates: ["2026-09-05"] })
+    ).toBe("coming");
+  });
+  it("marks toggles coming when their day is still ahead", () => {
+    expect(
+      resolveScheduledStatus({ ...base, style: "toggle", planned: 1, scheduledDates: ["2026-09-05"] })
+    ).toBe("coming");
   });
 });

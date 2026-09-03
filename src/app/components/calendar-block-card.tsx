@@ -27,6 +27,8 @@ export type BacklogTactic = {
   trackingType: string | null;
   executionStyle?: string | null;
   unit: string | null;
+  scheduled: number;
+  weekTarget: number;
 };
 
 type ExecutionStyle = "toggle" | "occurrence" | "volume";
@@ -85,6 +87,11 @@ export function CalendarBlockCard(props: CardProps) {
       <span className="min-w-0 flex-1">
         <span className="block truncate text-xs font-medium text-ink">{title}</span>
         {meta ? <span className="block truncate font-mono text-[10px] tracking-wide text-ink-3">{meta}</span> : null}
+        {props.variant === "backlog" ? (
+          <span className="block font-mono text-[10px] tracking-wide text-teal">
+            {props.item.scheduled} von {props.item.weekTarget} gescheduled
+          </span>
+        ) : null}
       </span>
       {props.variant === "scheduled" ? (
         <button

@@ -4,8 +4,8 @@ import type { BacklogTactic, CalendarBlockWithTitle } from "@/app/components/cal
 import {
   addDays,
   getActiveCycle,
-  listBacklogTactics,
   listCalendarBlocksForRange,
+  listSchedulingState,
   parseDate,
   startOfIsoWeek,
   toDateString,
@@ -60,7 +60,11 @@ export default async function CalendarPage({
 
   // Sequential awaits — the PB SDK auto-cancels parallel identical requests on one client.
   const blocksRaw = await listCalendarBlocksForRange(cycle.id, gridStartISO, gridEndISO);
-  const backlogRaw = await listBacklogTactics(cycle.id, gridStartISO, gridEndISO);
+  // Scheduling progress always references the current week (Mon–Sun), independent of the shown month.
+  const refWeekMonday = startOfIsoWeek(parseDate(referenceDate));
+  const refWeekStartISO = toDateString(refWeekMonday);
+  const refWeekEndISO = toDateString(addDays(refWeekMonday, 6));
+  const backlogRaw = await listSchedulingState(cycle.id, refWeekStartISO, refWeekEndISO);
 
   // Normalize to plain-JSON-serializable props for the client board.
   const blocks: CalendarBlockWithTitle[] = blocksRaw.map((entry) => ({
@@ -82,7 +86,10 @@ export default async function CalendarPage({
     title: String(item.title ?? "Untitled"),
     goalTitle: item.goalTitle != null ? String(item.goalTitle) : null,
     trackingType: item.trackingType != null ? String(item.trackingType) : null,
-    unit: item.unit != null ? String(item.unit) : null
+    executionStyle: String(item.executionStyle ?? ""),
+    unit: item.unit != null ? String(item.unit) : null,
+    scheduled: Number(item.scheduled ?? 0),
+    weekTarget: Number(item.weekTarget ?? 0)
   }));
 
   return (

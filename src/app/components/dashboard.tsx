@@ -242,7 +242,7 @@ export async function DashboardView({ cycleId }: { cycleId?: string }) {
                         </span>
                         <span>{formatPercent(score.score)}</span>
                       </div>
-                      <ProgressBar tone={score.status === "on_track" ? "teal" : score.status === "warning" ? "amber" : "error"} value={score.score} />
+                      <ProgressBar tone={score.status === "on_track" ? "teal" : score.status === "warning" ? "amber" : score.status === "coming" ? "ink" : "error"} value={score.score} />
                     </div>
                   </td>
                   <td className="py-4 pr-4 align-top text-ink-2">{score.weight.toFixed(1)}x</td>

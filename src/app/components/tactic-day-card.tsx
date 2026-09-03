@@ -40,6 +40,7 @@ export function TacticDayCard({ tactic }: { tactic: TodayTacticProgress }) {
         </div>
         <p className="mt-2 text-sm text-ink-3">
           {formatAmount(pool.remaining)} von {formatAmount(pool.target)} offen
+          {(tactic.scheduled ?? 0) > 0 ? ` · ${tactic.scheduled} scheduled` : ""}
         </p>
       </div>
     );

@@ -281,14 +281,14 @@ export function CalendarBoard({
           </section>
 
           <aside
-            aria-label="Unscheduled tactics"
+            aria-label="Tactics to schedule"
             className="h-fit rounded-[20px] border border-border bg-surface p-4"
           >
-            <p className="eyebrow">Unscheduled</p>
+            <p className="eyebrow">Tactics</p>
             <p className="mt-1 text-sm text-ink-3">
               {backlog.length
-                ? `Drag a tactic onto a day to schedule it (${backlog.length}).`
-                : "Everything is scheduled."}
+                ? `Drag a tactic onto a day to schedule it (${backlog.length}). Scheduled ones stay here, marked.`
+                : "No active tactics."}
             </p>
             <div className="mt-3 space-y-2">
               {backlog.map((item) => (
