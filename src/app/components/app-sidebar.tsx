@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, CalendarDays, ListChecks, Repeat } from "lucide-react";
+import { LayoutDashboard, CalendarDays, ListChecks, NotebookPen, Repeat } from "lucide-react";
 
 import {
   Sidebar,
@@ -21,6 +21,7 @@ import {
 const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/today", label: "Today", icon: ListChecks },
+  { href: "/daily-logs", label: "Daily Logs", icon: NotebookPen },
   { href: "/weeks", label: "Weeks", icon: CalendarDays },
   { href: "/cycles", label: "Cycles", icon: Repeat }
 ];

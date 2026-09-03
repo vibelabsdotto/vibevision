@@ -100,7 +100,7 @@ export function SectionHeader({
         <h2 className="mt-1 font-display text-2xl tracking-tight text-ink">{title}</h2>
       </div>
       {href && label ? (
-        <Link href={href} className={outlineButtonClasses}>
+        <Link href={href} prefetch={false} className={outlineButtonClasses}>
           {label}
         </Link>
       ) : null}

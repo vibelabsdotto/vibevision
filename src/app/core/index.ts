@@ -458,9 +458,9 @@ export function isDueToday(plan: TacticPlan, date: string, weeklyRemaining: numb
 
 export function getActualProgress(plan: TacticPlan, entries: TacticEntryValue[]) {
   if (plan.trackingType === "boolean") {
-    return entries.reduce((sum, entry) => sum + (entry.completed || entry.value > 0 ? 1 : 0), 0);
+    return Math.max(0, entries.reduce((sum, entry) => sum + (entry.completed || entry.value > 0 ? 1 : 0), 0));
   }
-  return entries.reduce((sum, entry) => sum + Number(entry.value), 0);
+  return Math.max(0, entries.reduce((sum, entry) => sum + Number(entry.value), 0));
 }
 
 export function getTodayProgress(plan: TacticPlan, entries: TacticEntryValue[], date: string) {
@@ -1026,10 +1026,11 @@ function goalScoresFromTacticScores(scores: TacticWeekScore[]) {
 }
 
 export function getTacticExecutionScore(plan: TacticPlan, planned: number, actual: number) {
-  if (planned <= 0) return actual > 0 ? 1 : 0;
-  if (plan.recurrenceType === "once") return actual >= planned ? 1 : 0;
-  if (planned > 1) return Math.min(actual / planned, 1);
-  return actual >= planned ? 1 : 0;
+  const safeActual = Math.max(0, actual);
+  if (planned <= 0) return safeActual > 0 ? 1 : 0;
+  if (plan.recurrenceType === "once") return safeActual >= planned ? 1 : 0;
+  if (planned > 1) return Math.min(safeActual / planned, 1);
+  return safeActual >= planned ? 1 : 0;
 }
 
 /**
@@ -2132,4 +2133,78 @@ export async function recordEvent(type: string, payload: unknown, cycleId?: stri
     type,
     payloadJson: payload ? JSON.stringify(payload) : ""
   });
+}
+
+// ---------------------------------------------------------------- cycle update + daily-log range query (appended)
+
+export async function updateCycle(input: { id: string; title?: string; vision?: string | null; startDate?: string }): Promise<Cycle> {
+  const existing = await pb.collection("cycles").getOne(input.id).catch(() => null);
+  if (!existing) throw new Error(`Cycle not found: ${input.id}`);
+  const patch: Record<string, unknown> = {};
+  if (input.title !== undefined) {
+    if (input.title.trim() === "") throw new Error("title must be non-empty");
+    patch.title = input.title;
+    const slugBase = slugify(input.title);
+    let slug = slugBase;
+    let index = 1;
+    for (;;) {
+      const clash = await pb
+        .collection("cycles")
+        .getFirstListItem(pb.filter("slug = {:s}", { s: slug }))
+        .catch(() => null);
+      if (!clash || String(clash.id) === input.id) break;
+      index += 1;
+      slug = `${slugBase}-${index}`;
+    }
+    patch.slug = slug;
+  }
+  if (input.vision !== undefined) patch.vision = input.vision;
+  let newStart: Date | null = null;
+  if (input.startDate !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.startDate) || isNaN(parseDate(input.startDate).getTime())) {
+      throw new Error(`Invalid startDate: ${input.startDate}`);
+    }
+    const entryPage = await pb
+      .collection("tactic_entries")
+      .getList(1, 1, { filter: pb.filter("cycle = {:c}", { c: input.id }) });
+    if (entryPage.items.length > 0) {
+      throw new Error("cycle has entries — --start refused, create a new cycle instead");
+    }
+    const start = startOfIsoWeek(parseDate(input.startDate));
+    const end = addDays(start, 83);
+    patch.startDate = toDateString(start);
+    patch.endDate = toDateString(end);
+    newStart = start;
+  }
+  if (Object.keys(patch).length === 0) return toCycle(existing);
+  const updated = await pb.collection("cycles").update(input.id, patch);
+  if (newStart) {
+    const start: Date = newStart;
+    const oldWeeks = await pb.collection("cycle_weeks").getFullList({
+      filter: pb.filter("cycle = {:c}", { c: input.id })
+    });
+    for (const week of oldWeeks) {
+      await pb.collection("cycle_weeks").delete(week.id);
+    }
+    const weeks = Array.from({ length: 12 }).map((_, i) => ({
+      cycle: input.id,
+      weekNumber: i + 1,
+      startDate: toDateString(addDays(start, i * 7)),
+      endDate: toDateString(addDays(start, i * 7 + 6)),
+      label: `Week ${i + 1}`
+    }));
+    // sequential — the PB SDK auto-cancels parallel identical requests on one client
+    for (const week of weeks) {
+      await pb.collection("cycle_weeks").create(week);
+    }
+  }
+  return toCycle(updated);
+}
+
+export async function listDailyLogs(cycleId: string, from: string, to: string): Promise<DailyLog[]> {
+  const records = await pb.collection("daily_logs").getFullList({
+    filter: pb.filter("cycle = {:c} && date >= {:f} && date <= {:t}", { c: cycleId, f: from, t: to }),
+    sort: "date"
+  });
+  return records.map(toDailyLog);
 }

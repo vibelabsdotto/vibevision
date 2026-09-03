@@ -41,6 +41,7 @@ CYCLES
   vibevision cycles                           list cycles (* = active)
   vibevision cycle create --title "…" --start 2026-09-07 [--vision "…"] [--activate]
   vibevision cycle activate --id <cycleId> | --slug <slug>
+  vibevision cycle update --id <cycleId> [--title "…"] [--vision "…"] [--start 2026-09-07]
 
 GOALS & LAGS
   vibevision goals                            list goals + lag indicators of the active cycle
@@ -224,7 +225,8 @@ async function main(): Promise<void> {
       case "cycle":
         if (sub === "create") await C.cmdCycleCreate(flags as C.Args, ctx);
         else if (sub === "activate") await C.cmdCycleActivate(flags as C.Args, ctx);
-        else fail("vibevision cycle needs a subcommand: create | activate");
+        else if (sub === "update") await C.cmdCycleUpdate(flags as C.Args, ctx);
+        else fail("vibevision cycle needs a subcommand: create | activate | update");
         break;
       case "goals":
         await C.cmdGoals(flags as C.Args, ctx);

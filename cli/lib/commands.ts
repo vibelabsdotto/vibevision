@@ -102,6 +102,24 @@ export async function cmdCycleActivate(args: Args, ctx: Ctx): Promise<void> {
   emit(ctx, `Activated "${cycle.title}" (${cycle.id})`, { instance, cycle });
 }
 
+export async function cmdCycleUpdate(args: Args, ctx: Ctx): Promise<void> {
+  const instance = connect(args.instance);
+  const id = args.id ?? args.cycle;
+  if (!id) throw new Error("vibevision cycle update needs --id <cycleId> (see: vibevision cycles)");
+  if (args.title === undefined && args.vision === undefined && args.start === undefined)
+    throw new Error("vibevision cycle update needs at least one of --title, --vision, --start");
+  const cycle = await Core.updateCycle({ id, title: args.title, vision: args.vision, startDate: args.start });
+  const changed = [
+    args.title !== undefined ? `title="${cycle.title}"` : null,
+    args.vision !== undefined ? "vision updated" : null,
+    args.start !== undefined ? `dates ${cycle.startDate} → ${cycle.endDate}` : null
+  ].filter(Boolean);
+  emit(ctx, `✓ Updated cycle ${cycle.id} — ${cycle.title}${changed.length ? ` (${changed.join(", ")})` : ""}`, {
+    instance,
+    cycle
+  });
+}
+
 // ---------------------------------------------------------------------- goals
 
 export async function cmdGoals(args: Args, ctx: Ctx): Promise<void> {
