@@ -139,6 +139,7 @@ export async function DashboardView({ cycleId }: { cycleId?: string }) {
                     </div>
                     <p className="mt-2 text-sm text-ink-3">
                       {formatAmount(pool.remaining)} von {formatAmount(pool.target)} offen
+                      {(score.scheduled ?? 0) > 0 ? ` · ${score.scheduled} scheduled` : ""}
                     </p>
                   </div>
                 );
