@@ -6,7 +6,12 @@ export async function getSetting(key: string): Promise<string | null> {
   const item = await pb
     .collection("settings")
     .getFirstListItem(pb.filter("key = {:k}", { k: key }))
-    .catch(() => null);
+    .catch((err: unknown) => {
+      // Genuine "no such setting" is a 404 → null. A dead connection (status 0)
+      // must never masquerade as missing data — callers branch on null.
+      if ((err as { status?: number })?.status === 0) throw err;
+      return null;
+    });
   return item ? String(item.value) : null;
 }
 

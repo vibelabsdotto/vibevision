@@ -18,7 +18,7 @@ import {
   saveApiKey,
   saveConfig
 } from "./lib/config";
-import { UsageError, connect, health } from "./lib/client";
+import { UsageError, connect, health, lastConnectedInstance } from "./lib/client";
 import * as C from "./lib/commands";
 
 const HELP = `vibevision — VibeVision CLI (12 Week Year execution OS)
@@ -292,6 +292,13 @@ main()
   .catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     const status = (err as { status?: number }).status;
+    if (status === 0 || /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|fetch failed/i.test(message)) {
+      const where = lastConnectedInstance();
+      fail(
+        `Cannot reach PocketBase${where ? ` at ${where}` : ""} — connection refused or timed out. ` +
+          `Is the instance running? (override: --instance <url> / VV_INSTANCE=<url>)`
+      );
+    }
     if (status && status >= 400) {
       const hint: Record<number, string> = {
         400: "Bad request — check the flags.",

@@ -13,6 +13,12 @@ import { getApiKey, resolveInstance } from "./config";
 
 export class UsageError extends Error {}
 
+/** URL passed to the most recent connect() — used for honest connection errors. */
+let lastInstanceUrl = "";
+export function lastConnectedInstance(): string {
+  return lastInstanceUrl;
+}
+
 export function assertInstance(flag?: string): string {
   const url = resolveInstance(flag);
   if (!url) {
@@ -28,6 +34,7 @@ export function assertInstance(flag?: string): string {
 
 export function connect(flag?: string): string {
   const url = assertInstance(flag);
+  lastInstanceUrl = url;
   pb.baseURL = url;
   const key = getApiKey(url);
   if (!key) {

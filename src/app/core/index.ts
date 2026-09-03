@@ -88,14 +88,24 @@ export async function listCycles(): Promise<Cycle[]> {
 export async function getActiveCycle(): Promise<Cycle | null> {
   const activeId = await getSetting(SETTINGS_KEY_ACTIVE_CYCLE);
   if (activeId) {
-    const cycle = await pb.collection("cycles").getOne(activeId).catch(() => null);
+    const cycle = await pb.collection("cycles").getOne(activeId).catch(rethrowConnectionError);
     if (cycle) return toCycle(cycle);
   }
   const cycle = await pb
     .collection("cycles")
     .getFirstListItem(pb.filter("status = {:status}", { status: "active" }), { sort: "-startDate" })
-    .catch(() => null);
+    .catch(rethrowConnectionError);
   return cycle ? toCycle(cycle) : null;
+}
+
+/**
+ * Pass-through for collection catches: genuine "not found" (404) stays null,
+ * but a dead connection (status 0) is rethrown so callers never mistake an
+ * outage for missing data (e.g. "No active cycle").
+ */
+function rethrowConnectionError(err: unknown): null {
+  if ((err as { status?: number })?.status === 0) throw err;
+  return null;
 }
 
 export async function activateCycleBySlug(slug: string): Promise<Cycle> {
