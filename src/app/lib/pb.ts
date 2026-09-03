@@ -89,7 +89,14 @@ pb.autoCancellation(false);
 
 const send = pb.send.bind(pb);
 pb.send = function (path: string, options: Parameters<typeof pb.send>[1]) {
-  return send(path, { ...options, fetch: rawFetch as unknown as typeof globalThis.fetch });
+  const __t0 = performance.now();
+  const result = send(path, { ...options, fetch: rawFetch as unknown as typeof globalThis.fetch });
+  // temporary transport instrumentation
+  Promise.resolve(result).finally(() => {
+    // eslint-disable-next-line no-console
+    console.log(`[perf-pb] ${(performance.now() - __t0).toFixed(0)}ms ${path.slice(0, 60)}`);
+  });
+  return result;
 };
 
 export function setPbAuth(token: string, user: { id: string; email: string }) {
