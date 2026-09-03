@@ -5,8 +5,13 @@ import { getDashboardData, getOverallScore, formatPercent } from "@/app/core";
 import { requireAuth } from "@/app/lib/auth";
 
 export async function DashboardView({ cycleId }: { cycleId?: string }) {
+  const t0 = performance.now();
   await requireAuth();
+  const tAuth = performance.now();
   const data = await getDashboardData(cycleId);
+  const tData = performance.now();
+  // eslint-disable-next-line no-console
+  console.log(`[perf-dash] auth=${(tAuth - t0).toFixed(0)}ms dashboardData=${(tData - tAuth).toFixed(0)}ms`);
   if (!data) {
     return (
       <EmptyState
@@ -22,7 +27,11 @@ export async function DashboardView({ cycleId }: { cycleId?: string }) {
 
   const todayCompletion =
     data.todaySummary.relevantCount > 0 ? data.todaySummary.completedCount / data.todaySummary.relevantCount : 0;
+  const tOverall0 = performance.now();
   const overall = await getOverallScore(data.cycle.id, data.currentWeek);
+  const tOverall1 = performance.now();
+  // eslint-disable-next-line no-console
+  console.log(`[perf-dash] overall=${(tOverall1 - tOverall0).toFixed(0)}ms render=${(tOverall0 - tData).toFixed(0)}ms`);
 
   return (
     <div className="space-y-6">
