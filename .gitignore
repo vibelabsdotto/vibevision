@@ -33,8 +33,14 @@ skills-lock.json
 # ts
 *.tsbuildinfo
 
+# pocketbase local artifacts (reproducible / regenerable — never commit)
+backend/pocketbase/bin/
+backend/pocketbase/pb_migrations/
+
+# CLI state (instance + stored superuser API keys — never commit)
+.vv/
+
 # logs
 npm-debug.log*
 yarn-error.log*
-pnpm-debug.log*backend/pocketbase/bin/
-backend/pocketbase/pb_migrations/
+pnpm-debug.log*

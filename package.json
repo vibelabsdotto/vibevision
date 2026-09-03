@@ -4,6 +4,9 @@
   "private": false,
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "vibevision": "bin/vibevision.js"
+  },
   "description": "VibeVision — the open 12 Week Year execution operating system. Next.js + PocketBase.",
   "repository": {
     "type": "git",

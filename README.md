@@ -67,6 +67,32 @@ Point the web container's `PB_URL` at the PocketBase origin, then run the
 migration script once against the live instance (or bake `pb_migrations/` into
 the PocketBase image — the repo's backend image does exactly that).
 
+## CLI
+
+`vibevision` is a CLI for operating any VibeVision (PocketBase) instance — it reuses
+the same core functions as the web app, so there is no duplicated business logic.
+
+```bash
+# install (from a repo checkout)
+npm link            # or: node bin/vibevision.js …
+
+# point it at an instance (persisted, or per invocation via --instance / VV_INSTANCE)
+vibevision config set instance https://vision-pb.vibelabs.to
+vibevision auth login --email <superuser> --password <pw>
+
+# daily operation
+vibevision today
+vibevision log entry --tactic <id> --value 2
+vibevision log evening --agency 4 --wins "shipped the report"
+
+# analysis
+vibevision score --week 8
+vibevision report --week 8
+vibevision today --json
+```
+
+Run `vibevision help` for the full command reference.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
