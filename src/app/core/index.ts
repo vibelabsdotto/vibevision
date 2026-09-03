@@ -1161,7 +1161,10 @@ function scoreTacticsForWeek(input: {
         scoringCutoffDate
       })
     );
-    if (planned <= 0 && entries.every((entry) => entry.tacticId !== tactic.id)) {
+    const scheduledDatesUpfront = calendarBlocks
+      .filter((block) => block.tacticId === tactic.id)
+      .map((block) => block.date);
+    if (planned <= 0 && entries.every((entry) => entry.tacticId !== tactic.id) && scheduledDatesUpfront.length === 0) {
       return acc;
     }
     const tacticEntriesForWeek = entries.filter((entry) => entry.tacticId === tactic.id);
