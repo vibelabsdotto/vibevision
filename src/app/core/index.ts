@@ -303,7 +303,7 @@ export function formatPercent(value: number) {
 
 export function formatAmount(n: number): string {
   if (!Number.isFinite(n)) return "0";
-  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+  return String(Math.round(n));
 }
 
 export function startOfIsoWeek(date: Date) {

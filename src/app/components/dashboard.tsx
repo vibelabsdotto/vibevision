@@ -117,7 +117,7 @@ export async function DashboardView({ cycleId }: { cycleId?: string }) {
                   </div>
                   {score.trackingType === "boolean" ? (
                     <span className="text-sm text-ink-2">
-                      {score.todayActual}/{score.todayTarget} {score.unit}
+                      {formatAmount(score.todayActual)}/{formatAmount(score.todayTarget)} {score.unit}
                     </span>
                   ) : (
                     <div className="flex shrink-0 items-center gap-2">
@@ -157,7 +157,7 @@ export async function DashboardView({ cycleId }: { cycleId?: string }) {
                         {block.endTime ? `-${block.endTime}` : ""}
                       </p>
                       <p>
-                        {block.plannedValue} {block.unit}
+                        {formatAmount(block.plannedValue)} {block.unit}
                       </p>
                     </div>
                   </div>
@@ -199,7 +199,7 @@ export async function DashboardView({ cycleId }: { cycleId?: string }) {
                     <div className="min-w-40">
                       <div className="mb-2 flex items-center justify-between text-sm text-ink-2">
                         <span>
-                          {score.actual}/{score.planned}
+                          {formatAmount(score.actual)}/{formatAmount(score.planned)}
                         </span>
                         <span>{formatPercent(score.score)}</span>
                       </div>

@@ -1,7 +1,7 @@
 import { DailyCheckin } from "@/app/components/daily-checkin";
 import { TacticDayCard } from "@/app/components/tactic-day-card";
 import { EmptyState, ProgressBar, SectionHeader, StatusBadge, surfaceClasses } from "@/app/components/ui";
-import { getDailyLog, getDashboardData, formatPercent, todayDateString } from "@/app/core";
+import { getDailyLog, getDashboardData, formatAmount, formatPercent, todayDateString } from "@/app/core";
 import { requireAuth } from "@/app/lib/auth";
 
 export default async function TodayPage() {
@@ -45,7 +45,7 @@ export default async function TodayPage() {
             {data.todaySummary.completedCount}/{data.todaySummary.relevantCount} due tactics completed today
           </strong>
           <p className="mt-2 text-sm text-ink-2">{data.todaySummary.remainingCount} tactics still need work today.</p>
-          <p className="mt-1 text-sm text-ink-3">{data.todaySummary.totalRemaining.toFixed(1)} units remaining across due tactics.</p>
+          <p className="mt-1 text-sm text-ink-3">{formatAmount(data.todaySummary.totalRemaining)} units remaining across due tactics.</p>
           <div className="mt-4">
             <ProgressBar tone="teal" value={todayCompletion} />
           </div>
@@ -78,7 +78,7 @@ export default async function TodayPage() {
                     {block.endTime ? `-${block.endTime}` : ""}
                   </p>
                   <p>
-                    {block.plannedValue} {block.unit}
+                    {formatAmount(block.plannedValue)} {block.unit}
                   </p>
                 </div>
               </div>

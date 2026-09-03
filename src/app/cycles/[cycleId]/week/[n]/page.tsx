@@ -1,5 +1,5 @@
 import { EmptyState, ProgressBar, SectionHeader, StatusBadge, surfaceClasses } from "@/app/components/ui";
-import { getCycleById, getWeekScore, formatPercent } from "@/app/core";
+import { getCycleById, getWeekScore, formatAmount, formatPercent } from "@/app/core";
 import { requireAuth } from "@/app/lib/auth";
 import Link from "next/link";
 
@@ -58,7 +58,7 @@ export default async function CycleWeekPage({ params }: { params: Promise<{ cycl
                   <div className="min-w-40">
                     <div className="mb-2 flex items-center justify-between text-sm text-ink-2">
                       <span>
-                        {item.actual}/{item.planned}
+                        {formatAmount(item.actual)}/{formatAmount(item.planned)}
                       </span>
                       <span>{formatPercent(item.score)}</span>
                     </div>
