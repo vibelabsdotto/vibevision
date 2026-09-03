@@ -301,6 +301,11 @@ export function formatPercent(value: number) {
   return `${Math.round(value * 100)}%`;
 }
 
+export function formatAmount(n: number): string {
+  if (!Number.isFinite(n)) return "0";
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
 export function startOfIsoWeek(date: Date) {
   const copy = new Date(date);
   const day = copy.getUTCDay() || 7;

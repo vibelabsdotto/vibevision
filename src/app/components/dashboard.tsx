@@ -1,7 +1,8 @@
 import Link from "next/link";
 
 import { EmptyState, MetricCard, ProgressBar, SectionHeader, StatusBadge, surfaceClasses } from "@/app/components/ui";
-import { getDashboardData, getOverallScore, formatPercent } from "@/app/core";
+import { TacticStepper } from "@/app/components/tactic-stepper";
+import { getDashboardData, getOverallScore, formatAmount, formatPercent } from "@/app/core";
 import { requireAuth } from "@/app/lib/auth";
 
 export async function DashboardView({ cycleId }: { cycleId?: string }) {
@@ -114,15 +115,26 @@ export async function DashboardView({ cycleId }: { cycleId?: string }) {
                       {score.todayLabel} · {score.goalTitle}
                     </p>
                   </div>
-                  <span className="text-sm text-ink-2">
-                    {score.todayActual}/{score.todayTarget} {score.unit}
-                  </span>
+                  {score.trackingType === "boolean" ? (
+                    <span className="text-sm text-ink-2">
+                      {score.todayActual}/{score.todayTarget} {score.unit}
+                    </span>
+                  ) : (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <TacticStepper tacticId={score.tacticId} unit={score.unit} />
+                      <span className="text-sm text-ink-2">
+                        {formatAmount(score.todayActual)}/{formatAmount(score.todayTarget)} {score.unit}
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <div className="mt-3">
                   <ProgressBar tone={score.isTodayComplete ? "teal" : "coral"} value={score.todayTarget > 0 ? score.todayActual / score.todayTarget : 0} />
                 </div>
                 <p className="mt-2 text-sm text-ink-3">
-                  {score.isTodayComplete ? "Done for today." : `${score.todayRemaining} ${score.unit} left today.`}
+                  {score.isTodayComplete
+                    ? "Done for today."
+                    : `${score.trackingType === "boolean" ? score.todayRemaining : formatAmount(score.todayRemaining)} ${score.unit} left today.`}
                 </p>
               </div>
             ))}

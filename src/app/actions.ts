@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 
 import { getActiveCycle, getTactic, listGoals, resolveTacticPlan, todayDateString } from "@/app/core";
 import { evening, morning } from "@/app/core/dailyLogs";
-import { addTacticEntry } from "@/app/core/tactics";
+import { addTacticEntry, completeTactic } from "@/app/core/tactics";
 import { requireAuth } from "@/app/lib/auth";
 
 function value(formData: FormData, key: string) {
@@ -51,20 +51,12 @@ export async function eveningAction(formData: FormData) {
   revalidatePath("/daily-logs");
 }
 
-export async function addEntryAction(formData: FormData) {
+export async function completeTacticAction(formData: FormData) {
   await requireAuth();
   const tacticId = String(value(formData, "tacticId") ?? "");
   if (!tacticId) throw new Error("Missing tacticId");
   await assertTacticInActiveCycle(tacticId);
-  const valueRaw = value(formData, "value");
-  const mode = value(formData, "mode");
-  await addTacticEntry({
-    tacticId,
-    date: todayDateString(),
-    value: valueRaw ? Number(valueRaw) : undefined,
-    completed: mode === "complete" ? true : undefined,
-    note: value(formData, "note")
-  });
+  await completeTactic(tacticId);
   revalidatePath("/");
   revalidatePath("/today");
   revalidatePath("/daily-logs");
