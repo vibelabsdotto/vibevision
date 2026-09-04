@@ -16,6 +16,7 @@ export type CalendarBlockWithTitle = {
   note: string | null;
   tacticTitle: string;
   goalTitle: string;
+  unit: string | null;
   trackingType?: string | null;
   executionStyle?: string | null;
 };
@@ -27,7 +28,6 @@ export type BacklogTactic = {
   trackingType: string | null;
   executionStyle?: string | null;
   unit: string | null;
-  scheduled: number;
   weekTarget: number;
 };
 
@@ -39,7 +39,7 @@ function executionStyleOf(input: { executionStyle?: string | null; trackingType?
   return input.trackingType === "boolean" ? "toggle" : "volume";
 }
 
-function formatMeta(block: Pick<CalendarBlockWithTitle, "startTime" | "endTime" | "durationMinutes" | "plannedValue">): string | null {
+function formatMeta(block: Pick<CalendarBlockWithTitle, "startTime" | "endTime" | "durationMinutes" | "plannedValue" | "unit">): string | null {
   const parts: string[] = [];
   if (block.startTime) {
     parts.push(block.endTime ? `${block.startTime}–${block.endTime}` : block.startTime);
@@ -48,14 +48,19 @@ function formatMeta(block: Pick<CalendarBlockWithTitle, "startTime" | "endTime" 
     parts.push(`${block.durationMinutes}m`);
   }
   if (Number.isFinite(block.plannedValue) && block.plannedValue > 0) {
-    parts.push(`×${block.plannedValue}`);
+    parts.push(`${block.plannedValue} ${block.unit ?? "units"}`);
   }
   return parts.length ? parts.join(" · ") : null;
 }
 
 type CardProps =
   | { variant: "scheduled"; block: CalendarBlockWithTitle; onDelete: (blockId: string) => void }
-  | { variant: "backlog"; item: BacklogTactic };
+  | {
+      variant: "backlog";
+      item: BacklogTactic;
+      blockValue: string;
+      onBlockValueChange: (value: string) => void;
+    };
 
 export function CalendarBlockCard(props: CardProps) {
   const dragId = props.variant === "scheduled" ? props.block.id : `new:${props.item.tacticId}`;
@@ -64,7 +69,10 @@ export function CalendarBlockCard(props: CardProps) {
   // Toggles can't be scheduled anymore; if one is rendered anyway, keep it inert (no drag handle).
   const isToggle =
     props.variant === "scheduled" ? executionStyleOf(props.block) === "toggle" : executionStyleOf(props.item) === "toggle";
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: dragId, disabled: isToggle });
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: dragId,
+    disabled: isToggle
+  });
 
   return (
     <div
@@ -88,9 +96,25 @@ export function CalendarBlockCard(props: CardProps) {
         <span className="block truncate text-xs font-medium text-ink">{title}</span>
         {meta ? <span className="block truncate font-mono text-[10px] tracking-wide text-ink-3">{meta}</span> : null}
         {props.variant === "backlog" ? (
-          <span className="block font-mono text-[10px] tracking-wide text-teal">
-            {props.item.scheduled} von {props.item.weekTarget} gescheduled
-          </span>
+          <>
+            <span className="block font-mono text-[10px] tracking-wide text-teal">
+              Weekly target: {props.item.weekTarget} {props.item.unit ?? "units"}
+            </span>
+            <label className="mt-1.5 flex items-center gap-1.5 text-[10px] text-ink-3">
+              Block
+              <input
+                aria-label={`${props.item.title} block size`}
+                className="h-7 w-16 rounded-[7px] border border-border bg-surface px-2 font-mono text-xs text-ink outline-none transition focus:border-teal focus:ring-2 focus:ring-teal/15"
+                max={props.item.weekTarget}
+                min="0.01"
+                onChange={(event) => props.onBlockValueChange(event.target.value)}
+                step={executionStyleOf(props.item) === "occurrence" ? "1" : "any"}
+                type="number"
+                value={props.blockValue}
+              />
+              <span>{props.item.unit ?? "units"}</span>
+            </label>
+          </>
         ) : null}
       </span>
       {props.variant === "scheduled" ? (

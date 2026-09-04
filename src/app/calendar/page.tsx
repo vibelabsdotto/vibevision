@@ -79,7 +79,8 @@ export default async function CalendarPage({
     plannedValue: Number(entry.plannedValue),
     note: (entry.note as string | null) ?? null,
     tacticTitle: String(entry.tacticTitle ?? "Untitled"),
-    goalTitle: String(entry.goalTitle ?? "")
+    goalTitle: String(entry.goalTitle ?? ""),
+    unit: entry.unit != null ? String(entry.unit) : null
   }));
   const backlog: BacklogTactic[] = backlogRaw.map((item) => ({
     tacticId: String(item.id),
@@ -88,7 +89,6 @@ export default async function CalendarPage({
     trackingType: item.trackingType != null ? String(item.trackingType) : null,
     executionStyle: String(item.executionStyle ?? ""),
     unit: item.unit != null ? String(item.unit) : null,
-    scheduled: Number(item.scheduled ?? 0),
     weekTarget: Number(item.weekTarget ?? 0)
   }));
 

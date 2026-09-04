@@ -18,9 +18,12 @@ import {
   startOfIsoWeek,
   addDays,
   parseDate,
-  formatPercent
+  formatAmount,
+  formatPercent,
+  getTacticStepDelta
 } from "@/app/core";
 import type { TacticPlan, TacticWeekScore } from "@/app/core";
+import * as Core from "@/app/core";
 
 describe("scoring thresholds", () => {
   it("maps scores to statuses", () => {
@@ -94,6 +97,94 @@ describe("weekly targets", () => {
     expect(getPlannedWeeklyTarget({ trackingType: "boolean", recurrenceType: "weekdays", recurrenceCount: 1, targetValue: 1, unit: "done" })).toBe(5);
     expect(getPlannedWeeklyTarget({ trackingType: "quantity", recurrenceType: "times_per_week", recurrenceCount: 3, targetValue: 2, unit: "count" })).toBe(6);
     expect(getPlannedWeeklyTarget({ trackingType: "boolean", recurrenceType: "once", recurrenceCount: 1, targetValue: 1, unit: "done" })).toBe(1);
+  });
+});
+
+describe("calendar scheduling progress", () => {
+  const calendarCore = Core as unknown as {
+    getSchedulingProgress?: (
+      plan: TacticPlan,
+      blocks: Array<{ plannedValue: number }>
+    ) => { weekTarget: number; scheduled: number; remaining: number };
+    resolveCalendarBlockValue?: (
+      plan: TacticPlan,
+      blocks: Array<{ plannedValue: number }>,
+      requestedValue: number,
+      executionStyle?: "toggle" | "occurrence" | "volume"
+    ) => number;
+  };
+  const getSchedulingProgress = calendarCore.getSchedulingProgress;
+  const resolveCalendarBlockValue = calendarCore.resolveCalendarBlockValue;
+
+  it("exposes scheduling progress as scheduled units, not block count", () => {
+    expect(getSchedulingProgress).toBeTypeOf("function");
+  });
+
+  it("rejects a block that would exceed the remaining weekly target", () => {
+    expect(resolveCalendarBlockValue).toBeTypeOf("function");
+    if (!resolveCalendarBlockValue) return;
+    const plan: TacticPlan = {
+      trackingType: "duration",
+      recurrenceType: "times_per_week",
+      recurrenceCount: 1,
+      targetValue: 10,
+      unit: "hours"
+    };
+
+    expect(() => resolveCalendarBlockValue(plan, [{ plannedValue: 8 }], 3)).toThrow(
+      "Only 2 hours remain to schedule this week"
+    );
+    expect(resolveCalendarBlockValue(plan, [{ plannedValue: 8 }], 2)).toBe(2);
+  });
+
+  it("sums custom block values against the weekly target", () => {
+    if (!getSchedulingProgress) return;
+    const plan: TacticPlan = {
+      trackingType: "duration",
+      recurrenceType: "times_per_week",
+      recurrenceCount: 1,
+      targetValue: 10,
+      unit: "hours"
+    };
+
+    expect(getSchedulingProgress(plan, [{ plannedValue: 2 }, { plannedValue: 2 }])).toEqual({
+      weekTarget: 10,
+      scheduled: 4,
+      remaining: 6
+    });
+  });
+
+  it("accepts an exact decimal allocation without floating-point drift", () => {
+    if (!getSchedulingProgress || !resolveCalendarBlockValue) return;
+    const plan: TacticPlan = {
+      trackingType: "duration",
+      recurrenceType: "times_per_week",
+      recurrenceCount: 1,
+      targetValue: 0.3,
+      unit: "hours"
+    };
+
+    expect(resolveCalendarBlockValue(plan, [{ plannedValue: 0.1 }], 0.2, "volume")).toBe(0.2);
+    expect(getSchedulingProgress(plan, [{ plannedValue: 0.1 }, { plannedValue: 0.2 }])).toEqual({
+      weekTarget: 0.3,
+      scheduled: 0.3,
+      remaining: 0
+    });
+  });
+
+  it("honors an explicit occurrence style when validating block values", () => {
+    if (!resolveCalendarBlockValue) return;
+    const plan: TacticPlan = {
+      trackingType: "quantity",
+      recurrenceType: "times_per_week",
+      recurrenceCount: 1,
+      targetValue: 5,
+      unit: "posts"
+    };
+
+    expect(() => resolveCalendarBlockValue(plan, [], 1.5, "occurrence")).toThrow(
+      "Occurrence block size must be a whole number"
+    );
   });
 });
 
@@ -172,6 +263,24 @@ describe("date utils", () => {
   it("formatPercent rounds", () => {
     expect(formatPercent(0.456)).toBe("46%");
     expect(formatPercent(1)).toBe("100%");
+  });
+
+  it("formatAmount preserves meaningful decimal precision", () => {
+    expect(formatAmount(0.5)).toBe("0.5");
+    expect(formatAmount(2.25)).toBe("2.25");
+    expect(formatAmount(1.0000000001)).toBe("1");
+  });
+});
+
+describe("today tactic step bounds", () => {
+  it("stops incrementing at today's target", () => {
+    expect(getTacticStepDelta({ direction: "increase", todayActual: 1, todayTarget: 2 })).toBe(1);
+    expect(getTacticStepDelta({ direction: "increase", todayActual: 2, todayTarget: 2 })).toBe(0);
+  });
+
+  it("uses the exact fractional remainder for the final increment", () => {
+    expect(getTacticStepDelta({ direction: "increase", todayActual: 1, todayTarget: 1.5 })).toBe(0.5);
+    expect(getTacticStepDelta({ direction: "decrease", todayActual: 0.5, todayTarget: 1.5 })).toBe(-0.5);
   });
 });
 
@@ -299,42 +408,132 @@ describe("entry guards", () => {
   });
 });
 
-describe("pool due rule", () => {
-  const poolRow: TacticWeekScore = {
+describe("scheduled today tactics", () => {
+  const occurrenceRow: TacticWeekScore = {
     tacticId: "t1",
     tacticTitle: "Publish posts",
     goalId: "g1",
     goalTitle: "Audience",
-    planned: 7,
-    fullWeekPlanned: 7,
-    actual: 5,
-    score: 5 / 7,
+    planned: 0,
+    fullWeekPlanned: 5,
+    actual: 0,
+    score: 0,
     weight: 1,
     status: "off_track",
     unit: "posts",
     trackingType: "boolean",
     recurrenceType: "times_per_week",
-    recurrenceCount: 7,
+    recurrenceCount: 5,
     targetValue: 1,
     executionStyle: "occurrence"
   };
+  const durationRow: TacticWeekScore = {
+    ...occurrenceRow,
+    tacticId: "t2",
+    tacticTitle: "Bulk Up development",
+    planned: 0,
+    fullWeekPlanned: 10,
+    unit: "hours",
+    trackingType: "duration",
+    recurrenceType: "times_per_week",
+    recurrenceCount: 1,
+    targetValue: 10,
+    executionStyle: "volume"
+  };
+  const block = (id: string, tacticId: string, date: string, plannedValue: number) => ({
+    id,
+    tacticId,
+    date,
+    startTime: null,
+    endTime: null,
+    durationMinutes: null,
+    plannedValue,
+    note: null
+  });
 
-  it("open pools are due with null todayTarget and week remainder", () => {
-    const rows = buildTodayTactics([poolRow], [], "2026-04-15", [], []);
+  it("does not surface unscheduled flexible tactics", () => {
+    expect(buildTodayTactics([occurrenceRow, durationRow], [], "2026-04-15", [], [])).toEqual([]);
+  });
+
+  it("uses the sum of today's scheduled occurrence blocks as today's target", () => {
+    const todayBlocks = [block("b1", "t1", "2026-04-15", 1), block("b2", "t1", "2026-04-15", 1)];
+    const entries = [{ tacticId: "t1", date: "2026-04-15", value: 1, completed: true }];
+    const rows = buildTodayTactics([occurrenceRow], entries, "2026-04-15", todayBlocks, todayBlocks);
+
     expect(rows).toHaveLength(1);
-    expect(rows[0].dueToday).toBe(true);
-    expect(rows[0].todayTarget).toBeNull();
-    expect(rows[0].todayKind).toBe("pool");
-    expect(rows[0].weekRemaining).toBe(2);
-    expect(rows[0].weekTarget).toBe(7);
-    expect(rows[0].todayLabel).toBe("2 von 7 offen");
+    expect(rows[0].todayKind).toBe("scheduled");
+    expect(rows[0].todayTarget).toBe(2);
+    expect(rows[0].todayActual).toBe(1);
+    expect(rows[0].todayRemaining).toBe(1);
+    expect(rows[0].todayLabel).toBe("2 posts scheduled");
     expect(rows[0].isTodayComplete).toBe(false);
   });
 
-  it("a full pool is complete and no longer due", () => {
-    const rows = buildTodayTactics([{ ...poolRow, actual: 7, score: 1 }], [], "2026-04-15", [], []);
+  it("uses a custom duration block instead of the full weekly tactic target", () => {
+    const todayBlock = block("b1", "t2", "2026-04-15", 2);
+    const weekBlocks = [
+      todayBlock,
+      block("b2", "t2", "2026-04-16", 2),
+      block("b3", "t2", "2026-04-17", 2),
+      block("b4", "t2", "2026-04-18", 2),
+      block("b5", "t2", "2026-04-19", 2)
+    ];
+    const rows = buildTodayTactics([durationRow], [], "2026-04-15", [todayBlock], weekBlocks);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].todayTarget).toBe(2);
+    expect(rows[0].todayRemaining).toBe(2);
+    expect(rows[0].weekTarget).toBe(10);
+    expect(rows[0].todayLabel).toBe("2 hours scheduled");
+  });
+
+  it("keeps a completed scheduled block visible for the day", () => {
+    const todayBlock = block("b1", "t2", "2026-04-15", 2);
+    const entries = [
+      { tacticId: "t2", date: "2026-04-15", value: 1, completed: false },
+      { tacticId: "t2", date: "2026-04-15", value: 1, completed: false }
+    ];
+    const rows = buildTodayTactics([{ ...durationRow, actual: 2 }], entries, "2026-04-15", [todayBlock], [todayBlock]);
+
     expect(rows).toHaveLength(1);
     expect(rows[0].dueToday).toBe(false);
+    expect(rows[0].isTodayComplete).toBe(true);
+    expect(rows[0].todayRemaining).toBe(0);
+  });
+
+  it("does not show weekday toggles on weekends", () => {
+    const weekdayToggle: TacticWeekScore = {
+      ...occurrenceRow,
+      tacticId: "toggle-weekday",
+      fullWeekPlanned: 5,
+      planned: 5,
+      trackingType: "boolean",
+      recurrenceType: "weekdays",
+      recurrenceCount: 1,
+      targetValue: 1,
+      executionStyle: "toggle"
+    };
+
+    expect(buildTodayTactics([weekdayToggle], [], "2026-04-18", [], [])).toEqual([]);
+  });
+
+  it("keeps completed recurring volume tactics visible on their recurrence day", () => {
+    const dailyVolume: TacticWeekScore = {
+      ...durationRow,
+      tacticId: "daily-volume",
+      planned: 2,
+      fullWeekPlanned: 14,
+      actual: 2,
+      recurrenceType: "daily",
+      targetValue: 2,
+      executionStyle: "volume"
+    };
+    const entries = [{ tacticId: "daily-volume", date: "2026-04-15", value: 2, completed: false }];
+    const rows = buildTodayTactics([dailyVolume], entries, "2026-04-15", [], []);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].todayKind).toBe("recurring");
+    expect(rows[0].todayTarget).toBe(2);
     expect(rows[0].isTodayComplete).toBe(true);
   });
 });
@@ -366,6 +565,18 @@ describe("resolveScheduledStatus", () => {
     expect(
       resolveScheduledStatus({ ...base, actual: 1, scheduledDates: ["2026-09-01", "2026-09-03", "2026-09-05"] })
     ).toBe("warning");
+  });
+  it("uses scheduled values rather than block count for occurrence status", () => {
+    const input = {
+      ...base,
+      actual: 1,
+      scheduledDates: ["2026-09-01"],
+      scheduledBlocks: [{ date: "2026-09-01", plannedValue: 3 }]
+    } as Parameters<typeof resolveScheduledStatus>[0] & {
+      scheduledBlocks: Array<{ date: string; plannedValue: number }>;
+    };
+
+    expect(resolveScheduledStatus(input)).toBe("warning");
   });
   it("keeps volume on its score status (null) past the coming check", () => {
     expect(

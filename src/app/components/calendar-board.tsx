@@ -18,6 +18,7 @@ import {
   type CalendarBlockWithTitle
 } from "@/app/components/calendar-block-card";
 import { CalendarDayCell } from "@/app/components/calendar-day-cell";
+import { getRemainingForCalendarDate } from "@/app/components/calendar-scheduling";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 
 const WEEKDAY_HEADERS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -86,6 +87,11 @@ export function CalendarBoard({
   const view = viewOverride ?? (isMobile ? "week" : "month");
   const [weekOffset, setWeekOffset] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [blockValues, setBlockValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      backlog.map((item) => [item.tacticId, String(item.executionStyle === "occurrence" ? 1 : item.weekTarget)])
+    )
+  );
   const [isPending, startTransition] = useTransition();
 
   const sensors = useSensors(
@@ -145,7 +151,26 @@ export function CalendarBoard({
         setError("Toggles can't be scheduled");
         return;
       }
-      runAction(() => addBlockAction({ tacticId, date: overId }));
+      const plannedValue = Number(
+        blockValues[tacticId] ?? (style === "occurrence" ? 1 : item?.weekTarget)
+      );
+      if (!Number.isFinite(plannedValue) || plannedValue <= 0) {
+        setError("Choose a block size greater than 0 before scheduling");
+        return;
+      }
+      if (item) {
+        const remaining = getRemainingForCalendarDate({
+          tacticId,
+          date: overId,
+          weekTarget: item.weekTarget,
+          blocks
+        });
+        if (plannedValue > remaining) {
+          setError(`Only ${remaining} ${item.unit ?? "units"} remain to schedule that week`);
+          return;
+        }
+      }
+      runAction(() => addBlockAction({ tacticId, date: overId, plannedValue }));
       return;
     }
     const block = blocks.find((entry) => entry.id === activeId);
@@ -287,12 +312,23 @@ export function CalendarBoard({
             <p className="eyebrow">Tactics</p>
             <p className="mt-1 text-sm text-ink-3">
               {backlog.length
-                ? `Drag a tactic onto a day to schedule it (${backlog.length}). Scheduled ones stay here, marked.`
+                ? `Set a block size, then drag the tactic onto a day (${backlog.length}). Progress is measured in tactic units.`
                 : "No active tactics."}
             </p>
             <div className="mt-3 space-y-2">
               {backlog.map((item) => (
-                <CalendarBlockCard item={item} key={item.tacticId} variant="backlog" />
+                <CalendarBlockCard
+                  blockValue={
+                    blockValues[item.tacticId] ??
+                    String(item.executionStyle === "occurrence" ? 1 : item.weekTarget)
+                  }
+                  item={item}
+                  key={item.tacticId}
+                  onBlockValueChange={(value) =>
+                    setBlockValues((current) => ({ ...current, [item.tacticId]: value }))
+                  }
+                  variant="backlog"
+                />
               ))}
             </div>
           </aside>

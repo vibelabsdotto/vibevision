@@ -1,6 +1,9 @@
 "use client";
 
+import { Moon, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
+
+import { cn } from "@/lib/utils";
 
 const THEME_INIT = `(function(){try{var t=localStorage.getItem("vv-theme");if(!t){t=window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}if(t==="dark"){document.documentElement.classList.add("dark");}}catch(e){}})();`;
 
@@ -17,7 +20,7 @@ function apply(theme: "light" | "dark") {
   }
 }
 
-export function ThemeToggle() {
+export function ThemeToggle({ className }: { className?: string }) {
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [mounted, setMounted] = useState(false);
 
@@ -29,7 +32,10 @@ export function ThemeToggle() {
   return (
     <button
       aria-label="Toggle color theme"
-      className="flex h-8 w-8 items-center justify-center rounded-[12px] border border-border text-ink-2 transition hover:border-teal hover:text-teal"
+      className={cn(
+        "relative flex h-8 w-8 items-center justify-center rounded-[12px] border border-border text-ink-2 transition hover:border-teal hover:bg-surface-2 hover:text-teal",
+        className
+      )}
       onClick={() => {
         const next = theme === "dark" ? "light" : "dark";
         setTheme(next);
@@ -38,9 +44,7 @@ export function ThemeToggle() {
       suppressHydrationWarning
       type="button"
     >
-      <span aria-hidden className="text-sm">
-        {mounted ? (theme === "dark" ? "☀" : "☾") : "☾"}
-      </span>
+      {mounted && theme === "dark" ? <Sun aria-hidden size={16} /> : <Moon aria-hidden size={16} />}
     </button>
   );
 }

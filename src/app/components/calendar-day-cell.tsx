@@ -28,6 +28,8 @@ export function CalendarDayCell({
 
   return (
     <div
+      aria-current={isToday ? "date" : undefined}
+      aria-label={`Schedule for ${dateISO}`}
       className={`flex min-h-24 flex-col gap-1.5 rounded-[12px] border p-1.5 transition sm:min-h-28 ${
         isOver
           ? "border-teal bg-teal/5"

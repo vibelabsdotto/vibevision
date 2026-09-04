@@ -7,8 +7,7 @@ import { ThemeScript, ThemeToggle } from "@/app/components/theme-toggle";
 import { getAuth } from "@/app/lib/auth";
 import {
   SidebarInset,
-  SidebarProvider,
-  SidebarTrigger
+  SidebarProvider
 } from "@/lib/ui/sidebar";
 import "@/app/globals.css";
 
@@ -63,18 +62,15 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body className={`${sans.variable} ${display.variable} ${mono.variable} font-sans`}>
         <ThemeScript />
         <SidebarProvider>
-          <AppSidebar />
+          <AppSidebar user={auth.user} />
           <SidebarInset className="flex min-h-svh flex-col">
             <div className="flex flex-1 flex-col">
-              {/* top bar — actions only; navigation lives in the sidebar (desktop) / bottom nav (mobile) */}
-              <header className="sticky top-0 z-40 border-b border-border bg-bg/85 backdrop-blur">
+              {/* Mobile actions; desktop controls live in the DAZE-style sidebar. */}
+              <header className="sticky top-0 z-40 border-b border-border bg-bg/85 backdrop-blur md:hidden">
                 <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between gap-3 px-4 pt-[env(safe-area-inset-top)] sm:px-6">
-                  <div className="flex items-center gap-3">
-                    <SidebarTrigger className="hidden md:inline-flex" />
-                    <span className="text-sm font-medium text-ink-2 md:hidden">VibeVision</span>
-                  </div>
+                  <span className="brand-gradient-text font-display text-sm font-bold">VibeVision</span>
                   <div className="flex items-center gap-2">
-                    {auth ? (
+                    {auth.user ? (
                       <form action="/logout" method="post">
                         <button
                           className="rounded-[12px] border border-border px-3 py-1.5 text-sm text-ink-2 transition hover:border-coral hover:text-coral"

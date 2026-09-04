@@ -2,12 +2,22 @@
 
 import { revalidatePath } from "next/cache";
 
-import { getActiveCycle, getCalendarBlock, getOccurrenceTarget, getTactic, listGoals, resolveExecutionStyle, resolveTacticPlan, todayDateString, undoLatestTacticEntry, type TacticPlan } from "@/app/core";
-import * as coreModule from "@/app/core";
 import {
   addTacticCalendarBlock,
+  amountsEqual,
   deleteTacticCalendarBlock,
-  moveTacticCalendarBlock
+  getActiveCycle,
+  getCalendarBlock,
+  getDashboardData,
+  getPlannedWeeklyTarget,
+  getTactic,
+  getTacticStepDelta,
+  listGoals,
+  moveTacticCalendarBlock,
+  resolveExecutionStyle,
+  resolveTacticPlan,
+  todayDateString,
+  undoLatestTacticEntry
 } from "@/app/core";
 import { evening, morning } from "@/app/core/dailyLogs";
 import { addTacticEntry, completeTactic } from "@/app/core/tactics";
@@ -16,15 +26,6 @@ import { requireAuth } from "@/app/lib/auth";
 function value(formData: FormData, key: string) {
   const raw = formData.get(key);
   return typeof raw === "string" && raw.length > 0 ? raw : undefined;
-}
-
-type ExecutionStyle = "toggle" | "occurrence" | "volume";
-
-// Uses core's resolveExecutionStyle once it lands; falls back to trackingType until then.
-function styleOfPlan(plan: TacticPlan): ExecutionStyle {
-  const resolve = (coreModule as unknown as { resolveExecutionStyle?: (plan: TacticPlan) => ExecutionStyle }).resolveExecutionStyle;
-  if (typeof resolve === "function") return resolve(plan);
-  return plan.trackingType === "boolean" ? "toggle" : "volume";
 }
 
 async function assertTacticInActiveCycle(tacticId: string) {
@@ -71,7 +72,8 @@ export async function completeTacticAction(formData: FormData) {
   const tacticId = String(value(formData, "tacticId") ?? "");
   if (!tacticId) throw new Error("Missing tacticId");
   const tactic = await assertTacticInActiveCycle(tacticId);
-  if (styleOfPlan(resolveTacticPlan(tactic)) !== "toggle") {
+  const plan = resolveTacticPlan(tactic, { strict: true });
+  if (resolveExecutionStyle(plan, tactic, { strict: true }) !== "toggle") {
     throw new Error("Only toggles go through the Complete path");
   }
   await completeTactic(tacticId);
@@ -83,19 +85,45 @@ export async function completeTacticAction(formData: FormData) {
 export async function stepEntryAction(formData: FormData) {
   await requireAuth();
   const tacticId = String(value(formData, "tacticId") ?? "");
-  const delta = value(formData, "delta");
+  const rawDelta = value(formData, "delta");
   if (!tacticId) throw new Error("Missing tacticId");
-  if (delta !== "1" && delta !== "-1") throw new Error("Invalid delta: must be 1 or -1");
+  if (!rawDelta) throw new Error("Missing delta");
+  const requestedDelta = Number(rawDelta);
+  if (!Number.isFinite(requestedDelta) || requestedDelta === 0) {
+    throw new Error("Invalid delta for today's remaining target");
+  }
+
+  const dashboard = await getDashboardData();
+  const todayTactic = dashboard?.todayTactics.find((row) => row.tacticId === tacticId);
+  if (!todayTactic || todayTactic.todayTarget === null || todayTactic.todayTarget <= 0) {
+    throw new Error("Tactic is not scheduled for today");
+  }
+
   const tactic = await assertTacticInActiveCycle(tacticId);
-  const style = styleOfPlan(resolveTacticPlan(tactic));
+  const plan = resolveTacticPlan(tactic, { strict: true });
+  const style = resolveExecutionStyle(plan, tactic, { strict: true });
   if (style === "toggle") {
     throw new Error("Toggles only go through the Complete path");
   }
-  if (delta === "-1" && style === "occurrence") {
+
+  const direction = requestedDelta > 0 ? "increase" : "decrease";
+  const allowedDelta = getTacticStepDelta({
+    direction,
+    todayActual: todayTactic.todayActual,
+    todayTarget: todayTactic.todayTarget
+  });
+  if (allowedDelta === 0) {
+    throw new Error(direction === "increase" ? "Tactic is already complete for today" : "Nothing to subtract today");
+  }
+  if (!amountsEqual(requestedDelta, allowedDelta)) {
+    throw new Error("Invalid delta for today's remaining target");
+  }
+
+  if (direction === "decrease" && style === "occurrence") {
     const undone = await undoLatestTacticEntry(tacticId, todayDateString());
     if (!undone) throw new Error("Nothing to subtract today");
   } else {
-    await addTacticEntry({ tacticId, value: Number(delta), date: todayDateString() });
+    await addTacticEntry({ tacticId, value: allowedDelta, date: todayDateString() });
   }
   revalidatePath("/");
   revalidatePath("/today");
@@ -118,24 +146,37 @@ export async function moveBlockAction(input: { blockId: string; toDate: string }
   await assertBlockInActiveCycle(input.blockId);
   const result = await moveTacticCalendarBlock({ blockId: input.blockId, toDate: input.toDate });
   revalidatePath("/calendar");
+  revalidatePath("/");
+  revalidatePath("/today");
   return result;
 }
 
-export async function addBlockAction(input: { tacticId: string; date: string }) {
+export async function addBlockAction(input: { tacticId: string; date: string; plannedValue: number }) {
   await requireAuth();
   if (!input.tacticId) throw new Error("Missing tacticId");
   if (!input.date) throw new Error("Missing date");
   const tactic = await assertTacticInActiveCycle(input.tacticId);
-  const plan = resolveTacticPlan(tactic);
-  const style = styleOfPlan(plan);
+  const plan = resolveTacticPlan(tactic, { strict: true });
+  const style = resolveExecutionStyle(plan, tactic, { strict: true });
   if (style === "toggle") throw new Error("Toggles can't be scheduled");
+  const plannedValue = Number(input.plannedValue);
+  if (!Number.isFinite(plannedValue) || plannedValue <= 0) {
+    throw new Error("Block size must be greater than 0");
+  }
+  if (style === "occurrence" && !Number.isInteger(plannedValue)) {
+    throw new Error("Occurrence block size must be a whole number");
+  }
+  if (plannedValue > getPlannedWeeklyTarget(plan)) {
+    throw new Error(`Block size cannot exceed the ${getPlannedWeeklyTarget(plan)} ${plan.unit} weekly target`);
+  }
   await addTacticCalendarBlock({
     tacticId: input.tacticId,
     date: input.date,
-    // One block = one occurrence slot; volume keeps its target-based value.
-    plannedValue: style === "occurrence" ? 1 : plan.trackingType === "boolean" ? undefined : getOccurrenceTarget(plan)
+    plannedValue
   });
   revalidatePath("/calendar");
+  revalidatePath("/");
+  revalidatePath("/today");
 }
 
 export async function deleteBlockAction(input: { blockId: string }) {
@@ -144,4 +185,6 @@ export async function deleteBlockAction(input: { blockId: string }) {
   await assertBlockInActiveCycle(input.blockId);
   await deleteTacticCalendarBlock(input.blockId);
   revalidatePath("/calendar");
+  revalidatePath("/");
+  revalidatePath("/today");
 }
