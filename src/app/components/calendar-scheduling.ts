@@ -6,10 +6,18 @@ type VisibleCalendarBlock = {
   plannedValue: number;
 };
 
+type VisibleCycleWeek = {
+  weekNumber: number;
+  startDate: string;
+  endDate: string;
+};
+
 type CalendarSchedulingInput = {
   tacticId: string;
   date: string;
   weekTarget: number;
+  weekTargets?: Record<number, number>;
+  cycleWeeks?: VisibleCycleWeek[];
   blocks: VisibleCalendarBlock[];
 };
 
@@ -35,11 +43,16 @@ export function getSchedulingForCalendarDate({
   tacticId,
   date,
   weekTarget,
+  weekTargets,
+  cycleWeeks,
   blocks
 }: CalendarSchedulingInput): { scheduled: number; remaining: number } {
   const weekStart = startOfIsoWeek(date);
   const weekEnd = addDaysISO(weekStart, 6);
-  const target = normalizeAmount(Math.max(weekTarget, 0));
+  const destinationWeek = cycleWeeks?.find((week) => date >= week.startDate && date <= week.endDate);
+  const override = destinationWeek ? weekTargets?.[destinationWeek.weekNumber] : undefined;
+  const effectiveTarget = override === undefined ? weekTarget : override;
+  const target = normalizeAmount(Math.max(effectiveTarget, 0));
   const scheduled = normalizeAmount(
     blocks.reduce((sum, block) => {
       if (block.tacticId !== tacticId || block.date < weekStart || block.date > weekEnd) return sum;

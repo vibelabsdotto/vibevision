@@ -28,6 +28,8 @@ export type BacklogTactic = {
   trackingType: string | null;
   executionStyle?: string | null;
   unit: string | null;
+  baseWeekTarget: number;
+  weekTargets: Record<number, number>;
   weekTarget: number;
 };
 
@@ -105,7 +107,7 @@ export function CalendarBlockCard(props: CardProps) {
               <input
                 aria-label={`${props.item.title} block size`}
                 className="h-7 w-16 rounded-[7px] border border-border bg-surface px-2 font-mono text-xs text-ink outline-none transition focus:border-teal focus:ring-2 focus:ring-teal/15"
-                max={props.item.weekTarget}
+                max={Math.max(props.item.baseWeekTarget, ...Object.values(props.item.weekTargets))}
                 min="0.01"
                 onChange={(event) => props.onBlockValueChange(event.target.value)}
                 step={executionStyleOf(props.item) === "occurrence" ? "1" : "any"}

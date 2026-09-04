@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   addTacticCalendarBlock: vi.fn(),
   addTacticEntry: vi.fn(),
   undoLatestTacticEntry: vi.fn(),
+  getDashboardData: vi.fn(),
+  getTacticTodayState: vi.fn(),
   revalidatePath: vi.fn()
 }));
 
@@ -27,9 +29,8 @@ vi.mock("@/app/core", () => ({
   deleteTacticCalendarBlock: vi.fn(),
   getActiveCycle: vi.fn().mockResolvedValue({ id: "c1" }),
   getCalendarBlock: vi.fn(),
-  getDashboardData: vi.fn().mockImplementation(() =>
-    Promise.resolve({ todayTactics: mocks.todayRows })
-  ),
+  getDashboardData: mocks.getDashboardData,
+  getTacticTodayState: mocks.getTacticTodayState,
   getPlannedWeeklyTarget: vi.fn().mockReturnValue(10),
   getTactic: vi.fn().mockImplementation(() => Promise.resolve({
     id: "t1",
@@ -84,12 +85,48 @@ describe("stepEntryAction daily bounds", () => {
     mocks.addTacticCalendarBlock.mockReset();
     mocks.addTacticEntry.mockReset();
     mocks.undoLatestTacticEntry.mockReset();
+    mocks.getDashboardData.mockReset().mockImplementation(() =>
+      Promise.resolve({ todayTactics: mocks.todayRows })
+    );
+    mocks.getTacticTodayState.mockReset().mockImplementation(() => {
+      const row = mocks.todayRows.find((candidate) => candidate.tacticId === "t1");
+      return Promise.resolve(row ? {
+        ...row,
+        tactic: {
+          id: "t1",
+          goalId: "g1",
+          trackingType: "duration",
+          recurrenceType: "times_per_week",
+          recurrenceCount: 1,
+          targetValue: 10,
+          unit: "hours",
+          executionStyle: mocks.executionStyle,
+          active: true,
+          startsWeek: 1,
+          endsWeek: 12
+        }
+      } : null);
+    });
     mocks.revalidatePath.mockReset();
   });
 
   it("rejects a tactic that is not relevant today", async () => {
     await expect(stepEntryAction(form(1))).rejects.toThrow("Tactic is not scheduled for today");
     expect(mocks.addTacticEntry).not.toHaveBeenCalled();
+  });
+
+  it("uses the focused Today state instead of loading the full dashboard", async () => {
+    mocks.todayRows = [{
+      tacticId: "t1",
+      todayActual: 0,
+      todayTarget: 2,
+      executionStyle: "volume"
+    }];
+
+    await stepEntryAction(form(1));
+
+    expect(mocks.getTacticTodayState).toHaveBeenCalledWith("t1", "2026-04-15");
+    expect(mocks.getDashboardData).not.toHaveBeenCalled();
   });
 
   it("rejects increments after today's target is complete", async () => {
@@ -130,5 +167,15 @@ describe("stepEntryAction daily bounds", () => {
       addBlockAction({ tacticId: "t1", date: "2026-04-15", plannedValue: 1.5 })
     ).rejects.toThrow("Occurrence block size must be a whole number");
     expect(mocks.addTacticCalendarBlock).not.toHaveBeenCalled();
+  });
+
+  it("delegates weekly cap validation so a raised schedule override can exceed the base target", async () => {
+    await addBlockAction({ tacticId: "t1", date: "2026-04-15", plannedValue: 12 });
+
+    expect(mocks.addTacticCalendarBlock).toHaveBeenCalledWith({
+      tacticId: "t1",
+      date: "2026-04-15",
+      plannedValue: 12
+    });
   });
 });

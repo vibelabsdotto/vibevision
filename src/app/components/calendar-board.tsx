@@ -57,6 +57,7 @@ function eachDay(from: string, to: string): string[] {
 export function CalendarBoard({
   cycleStart,
   cycleEnd,
+  cycleWeeks,
   monthKey,
   prevMonthKey,
   nextMonthKey,
@@ -71,6 +72,7 @@ export function CalendarBoard({
   cycleId: string;
   cycleStart: string;
   cycleEnd: string;
+  cycleWeeks: Array<{ weekNumber: number; startDate: string; endDate: string }>;
   monthKey: string;
   prevMonthKey: string;
   nextMonthKey: string;
@@ -89,7 +91,10 @@ export function CalendarBoard({
   const [error, setError] = useState<string | null>(null);
   const [blockValues, setBlockValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(
-      backlog.map((item) => [item.tacticId, String(item.executionStyle === "occurrence" ? 1 : item.weekTarget)])
+      backlog.map((item) => [
+        item.tacticId,
+        String(item.executionStyle === "occurrence" ? 1 : item.baseWeekTarget)
+      ])
     )
   );
   const [isPending, startTransition] = useTransition();
@@ -152,7 +157,7 @@ export function CalendarBoard({
         return;
       }
       const plannedValue = Number(
-        blockValues[tacticId] ?? (style === "occurrence" ? 1 : item?.weekTarget)
+        blockValues[tacticId] ?? (style === "occurrence" ? 1 : item?.baseWeekTarget)
       );
       if (!Number.isFinite(plannedValue) || plannedValue <= 0) {
         setError("Choose a block size greater than 0 before scheduling");
@@ -162,7 +167,9 @@ export function CalendarBoard({
         const remaining = getRemainingForCalendarDate({
           tacticId,
           date: overId,
-          weekTarget: item.weekTarget,
+          weekTarget: item.baseWeekTarget,
+          weekTargets: item.weekTargets,
+          cycleWeeks,
           blocks
         });
         if (plannedValue > remaining) {

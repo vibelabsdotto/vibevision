@@ -19,6 +19,34 @@ describe("calendar destination-week capacity", () => {
     ).toBe(7);
   });
 
+  it("uses the destination week's explicit target override", () => {
+    const cycleWeeks = [
+      { weekNumber: 1, startDate: "2026-04-13", endDate: "2026-04-19" },
+      { weekNumber: 2, startDate: "2026-04-20", endDate: "2026-04-26" }
+    ];
+
+    expect(
+      getRemainingForCalendarDate({
+        tacticId: "t1",
+        date: "2026-04-22",
+        weekTarget: 10,
+        weekTargets: { 2: 5 },
+        cycleWeeks,
+        blocks
+      })
+    ).toBe(2);
+    expect(
+      getRemainingForCalendarDate({
+        tacticId: "t1",
+        date: "2026-04-22",
+        weekTarget: 10,
+        weekTargets: { 2: 15 },
+        cycleWeeks,
+        blocks: [{ tacticId: "t1", date: "2026-04-23", plannedValue: 12 }]
+      })
+    ).toBe(3);
+  });
+
   it("normalizes decimal block sums", () => {
     expect(
       getRemainingForCalendarDate({

@@ -527,8 +527,14 @@ export function getPlannedWeeklyTarget(plan: TacticPlan) {
   }
 }
 
-export function getSchedulingProgress(plan: TacticPlan, blocks: Array<{ plannedValue: number }>) {
-  const weekTarget = normalizeAmount(getPlannedWeeklyTarget(plan));
+export function getSchedulingProgress(
+  plan: TacticPlan,
+  blocks: Array<{ plannedValue: number }>,
+  weeklyTargetOverride?: number
+) {
+  const weekTarget = normalizeAmount(
+    weeklyTargetOverride === undefined ? getPlannedWeeklyTarget(plan) : weeklyTargetOverride
+  );
   const scheduled = normalizeAmount(
     blocks.reduce((sum, block) => {
       const value = Number(block.plannedValue);
@@ -546,7 +552,8 @@ export function resolveCalendarBlockValue(
   plan: TacticPlan,
   blocks: Array<{ plannedValue: number }>,
   requestedValue: number,
-  executionStyle: ExecutionStyle = deriveExecutionStyle(plan)
+  executionStyle: ExecutionStyle = deriveExecutionStyle(plan),
+  weeklyTargetOverride?: number
 ) {
   const rawValue = Number(requestedValue);
   const value = normalizeAmount(rawValue);
@@ -559,7 +566,7 @@ export function resolveCalendarBlockValue(
   if (executionStyle === "occurrence" && !Number.isInteger(value)) {
     throw new Error("Occurrence block size must be a whole number");
   }
-  const { remaining } = getSchedulingProgress(plan, blocks);
+  const { remaining } = getSchedulingProgress(plan, blocks, weeklyTargetOverride);
   if (value > remaining && !amountsEqual(value, remaining)) {
     throw new Error(`Only ${formatAmount(remaining)} ${plan.unit || "units"} remain to schedule this week`);
   }
@@ -598,8 +605,11 @@ export function isDueToday(plan: TacticPlan, date: string, weeklyRemaining: numb
   }
 }
 
-export function getActualProgress(plan: TacticPlan, entries: TacticEntryValue[]) {
-  const style = deriveExecutionStyle(plan);
+export function getActualProgress(
+  plan: TacticPlan,
+  entries: TacticEntryValue[],
+  style: ExecutionStyle = deriveExecutionStyle(plan)
+) {
   if (style === "toggle") {
     // One done-day counts once: a double-complete on the same date no longer inflates.
     const doneDates = new Set<string>();
@@ -624,8 +634,13 @@ export function getActualProgress(plan: TacticPlan, entries: TacticEntryValue[])
   return Math.max(0, entries.reduce((sum, entry) => sum + Number(entry.value), 0));
 }
 
-export function getTodayProgress(plan: TacticPlan, entries: TacticEntryValue[], date: string) {
-  return getActualProgress(plan, entries.filter((entry) => entry.date === date));
+export function getTodayProgress(
+  plan: TacticPlan,
+  entries: TacticEntryValue[],
+  date: string,
+  style: ExecutionStyle = deriveExecutionStyle(plan)
+) {
+  return getActualProgress(plan, entries.filter((entry) => entry.date === date), style);
 }
 
 // ---------------------------------------------------------------- tactics CRUD
@@ -1019,13 +1034,14 @@ function getScoringCutoffDate(
 
 export function getPlannedTargetForDate(params: {
   plan: TacticPlan;
+  executionStyle?: ExecutionStyle;
   fullWeekPlanned: number;
   blocks: Array<{ date: string; plannedValue: number }>;
   weekStartDate: string | null;
   weekEndDate: string | null;
   scoringCutoffDate: string;
 }) {
-  const { plan, fullWeekPlanned, blocks, weekStartDate, weekEndDate, scoringCutoffDate } = params;
+  const { plan, executionStyle, fullWeekPlanned, blocks, weekStartDate, weekEndDate, scoringCutoffDate } = params;
   if (blocks.length > 0) {
     return blocks
       .filter((block) => !weekStartDate || !weekEndDate || (block.date >= weekStartDate && block.date <= weekEndDate))
@@ -1042,7 +1058,7 @@ export function getPlannedTargetForDate(params: {
   }
 
   const elapsedDays = getElapsedDaysInWeek(weekStartDate, scoringCutoffDate);
-  const style = deriveExecutionStyle(plan);
+  const style = executionStyle ?? deriveExecutionStyle(plan);
   if (style === "toggle") {
     switch (plan.recurrenceType) {
       case "daily":
@@ -1229,6 +1245,7 @@ function scoreTacticsForWeek(input: {
     const planned = Number(
       getPlannedTargetForDate({
         plan,
+        executionStyle: style,
         fullWeekPlanned,
         blocks: calendarBlocks.filter((block) => block.tacticId === tactic.id),
         weekStartDate,
@@ -1243,7 +1260,7 @@ function scoreTacticsForWeek(input: {
       return acc;
     }
     const tacticEntriesForWeek = entries.filter((entry) => entry.tacticId === tactic.id);
-    const actual = getActualProgress(plan, tacticEntriesForWeek);
+    const actual = getActualProgress(plan, tacticEntriesForWeek, style);
     // Toggle: min(doneDueDays/dueDaysElapsed, 1) — actual is already clamped per date.
     // Occurrence: min(actual/N, 1) with pace status vs floor(N*elapsed/7). Volume: unchanged.
     const score =
@@ -1685,6 +1702,41 @@ function deriveBlockTimes(input: { startTime?: string | null; endTime?: string |
   return { startTime, endTime, durationMinutes };
 }
 
+export type TacticSchedule = {
+  id: string;
+  tacticId: string;
+  weekNumber: number;
+  plannedTarget: number | null;
+  required: boolean;
+};
+
+function toTacticSchedule(record: Record<string, unknown>): TacticSchedule {
+  return {
+    id: String(record.id),
+    tacticId: String(record.tactic),
+    weekNumber: Number(record.weekNumber),
+    plannedTarget:
+      record.plannedTarget === "" || record.plannedTarget === null || record.plannedTarget === undefined
+        ? null
+        : Number(record.plannedTarget),
+    required: Boolean(record.required)
+  };
+}
+
+/** Load only the schedule that controls one tactic in one target week. */
+export async function getTacticScheduleForWeek(
+  tacticId: string,
+  weekNumber: number
+): Promise<TacticSchedule | null> {
+  const record = await pb
+    .collection("tactic_schedules")
+    .getFirstListItem(
+      pb.filter("tactic = {:t} && weekNumber = {:w}", { t: tacticId, w: weekNumber })
+    )
+    .catch(rethrowConnectionError);
+  return record ? toTacticSchedule(record) : null;
+}
+
 export async function addTacticCalendarBlock(input: {
   tacticId: string;
   cycleId?: string;
@@ -1710,6 +1762,7 @@ export async function addTacticCalendarBlock(input: {
   const requestedValue = input.plannedValue ?? (plan.trackingType === "boolean" ? getOccurrenceTarget(plan) : null);
   validatePlannedValue(requestedValue);
   if (requestedValue === null) throw new Error("plannedValue is required for quantity and duration blocks");
+  const schedule = await getTacticScheduleForWeek(input.tacticId, weekNumber);
   const existingBlocks = await pb.collection("tactic_calendar_blocks").getFullList({
     filter: pb.filter("cycle = {:c} && weekNumber = {:w} && tactic = {:t}", {
       c: cycleId,
@@ -1721,7 +1774,8 @@ export async function addTacticCalendarBlock(input: {
     plan,
     existingBlocks.map((block) => ({ plannedValue: Number(block.plannedValue) })),
     requestedValue,
-    style
+    style,
+    schedule?.plannedTarget ?? undefined
   );
 
   const created = await pb.collection("tactic_calendar_blocks").create({
@@ -1769,6 +1823,7 @@ export async function updateTacticCalendarBlock(blockId: string, input: {
   if (!tactic) throw new Error(`Tactic not found: ${existing.tacticId}`);
   const plan = resolveTacticPlan(tactic, { strict: true });
   const style = resolveExecutionStyle(plan, tactic, { strict: true });
+  const schedule = await getTacticScheduleForWeek(existing.tacticId, weekNumber);
   const destinationRecords = await pb.collection("tactic_calendar_blocks").getFullList({
     filter: pb.filter("cycle = {:c} && weekNumber = {:w} && tactic = {:t}", {
       c: existing.cycleId,
@@ -1782,7 +1837,8 @@ export async function updateTacticCalendarBlock(blockId: string, input: {
       .filter((record) => String(record.id) !== blockId)
       .map((record) => ({ plannedValue: Number(record.plannedValue) })),
     input.plannedValue === undefined ? existing.plannedValue : Number(input.plannedValue),
-    style
+    style,
+    schedule?.plannedTarget ?? undefined
   );
 
   const updated = await pb.collection("tactic_calendar_blocks").update(blockId, {
@@ -1869,6 +1925,7 @@ export async function moveTacticCalendarBlock(input: {
   if (!tactic) throw new Error(`Tactic not found: ${block.tacticId}`);
   const plan = resolveTacticPlan(tactic, { strict: true });
   const style = resolveExecutionStyle(plan, tactic, { strict: true });
+  const schedule = await getTacticScheduleForWeek(block.tacticId, targetWeekNumber);
   const destinationRecords = await pb.collection("tactic_calendar_blocks").getFullList({
     filter: pb.filter("cycle = {:c} && weekNumber = {:w} && tactic = {:t}", {
       c: block.cycleId,
@@ -1882,7 +1939,8 @@ export async function moveTacticCalendarBlock(input: {
       .filter((record) => String(record.id) !== block.id)
       .map((record) => ({ plannedValue: Number(record.plannedValue) })),
     block.plannedValue,
-    style
+    style,
+    schedule?.plannedTarget ?? undefined
   );
 
   // Multiple same-tactic blocks on one day are valid (for example morning and
@@ -2243,7 +2301,7 @@ function mergeTodayScoreRows(params: {
       goalTitle: tacticRow.goalTitle,
       planned: 0,
       fullWeekPlanned,
-      actual: getActualProgress(plan, tacticEntries),
+      actual: getActualProgress(plan, tacticEntries, style),
       score: 0,
       weight: Number(tacticRow.tactic.scoringWeight),
       status:
@@ -2251,7 +2309,7 @@ function mergeTodayScoreRows(params: {
           style,
           fullWeekPlanned,
           planned: 0,
-          actual: getActualProgress(plan, tacticEntries),
+          actual: getActualProgress(plan, tacticEntries, style),
           scheduledDates: mergedScheduledDates,
           scheduledBlocks: mergedScheduledBlocks,
           asOfDate: params.asOfDate
@@ -2308,7 +2366,7 @@ export function buildTodayTactics(
       const isComplete = remaining === 0;
 
       if (style === "toggle") {
-        const todayActual = getTodayProgress(plan, tacticEntriesForWeek, date);
+        const todayActual = getTodayProgress(plan, tacticEntriesForWeek, date, style);
         const isRecurringToday =
           plan.recurrenceType === "daily" ||
           (plan.recurrenceType === "weekdays" && isWeekdayDate(date));
@@ -2334,7 +2392,7 @@ export function buildTodayTactics(
       }
 
       if (style === "occurrence") {
-        const todayActual = getTodayProgress(plan, tacticEntriesForWeek, date);
+        const todayActual = getTodayProgress(plan, tacticEntriesForWeek, date, style);
         const scheduledTodayTarget = normalizeAmount(
           scheduledBlocks.reduce((sum, block) => sum + Number(block.plannedValue), 0)
         );
@@ -2375,7 +2433,7 @@ export function buildTodayTactics(
       // Volume: calendar blocks are due on their specific date. Daily and
       // weekday plans remain recurrence-scheduled; flexible weekly pools do not
       // leak into Today until the user places a block on the calendar.
-      const todayActual = getTodayProgress(plan, tacticEntriesForWeek, date);
+      const todayActual = getTodayProgress(plan, tacticEntriesForWeek, date, style);
       const scheduledTodayTarget = normalizeAmount(
         scheduledBlocks.reduce((sum, block) => sum + Number(block.plannedValue), 0)
       );
@@ -2432,6 +2490,87 @@ export function buildTodayTactics(
       if (left.remaining !== right.remaining) return right.remaining - left.remaining;
       return left.tacticTitle.localeCompare(right.tacticTitle);
     });
+}
+
+export type TacticTodayState = {
+  tactic: Tactic;
+  executionStyle: ExecutionStyle;
+  todayActual: number;
+  todayTarget: number | null;
+};
+
+/**
+ * Load only the data needed to authorize one Today step. This deliberately
+ * avoids the dashboard's score, review, event, and all-tactic fan-out; the
+ * PocketBase execute hook remains the final atomic write boundary.
+ */
+export async function getTacticTodayState(
+  tacticId: string,
+  date: string = todayDateString()
+): Promise<TacticTodayState | null> {
+  const [cycle, tactic] = await Promise.all([getActiveCycle(), getTactic(tacticId)]);
+  if (!cycle || !tactic) return null;
+
+  const [goalRecord, weekNumber] = await Promise.all([
+    pb.collection("goals").getOne(tactic.goalId).catch(rethrowConnectionError),
+    getCurrentWeekNumber(cycle.id, date)
+  ]);
+  if (!goalRecord || String(goalRecord.cycle) !== cycle.id || !weekNumber) return null;
+
+  const [schedule, blockRecords, entryRecords] = await Promise.all([
+    getTacticScheduleForWeek(tacticId, weekNumber),
+    pb.collection("tactic_calendar_blocks").getFullList({
+      filter: pb.filter(
+        "cycle = {:c} && weekNumber = {:w} && tactic = {:t} && date = {:d}",
+        { c: cycle.id, w: weekNumber, t: tacticId, d: date }
+      )
+    }),
+    pb.collection("tactic_entries").getFullList({
+      filter: pb.filter(
+        "cycle = {:c} && weekNumber = {:w} && tactic = {:t} && date = {:d}",
+        { c: cycle.id, w: weekNumber, t: tacticId, d: date }
+      )
+    })
+  ]);
+
+  const plan = resolveTacticPlan(tactic, { strict: true });
+  const executionStyle = resolveExecutionStyle(plan, tactic, { strict: true });
+  const blocks = blockRecords.map((record) => ({
+    date: String(record.date),
+    plannedValue: Number(record.plannedValue)
+  }));
+  const scheduledTarget = normalizeAmount(
+    blocks.reduce((sum, block) => sum + (Number.isFinite(block.plannedValue) ? block.plannedValue : 0), 0)
+  );
+  const entries: TacticEntryValue[] = entryRecords.map((record) => ({
+    tacticId: String(record.tactic),
+    date: record.date ? String(record.date) : null,
+    value: Number(record.value),
+    completed: Boolean(record.completed)
+  }));
+  const todayActual = getTodayProgress(plan, entries, date, executionStyle);
+  const weekTarget = normalizeAmount(schedule?.plannedTarget ?? getPlannedWeeklyTarget(plan));
+  const recurringToday =
+    scheduledTarget <= 0 &&
+    weekTarget > 0 &&
+    isTacticActiveInWeek(tactic, weekNumber, schedule) &&
+    (plan.recurrenceType === "daily" ||
+      (plan.recurrenceType === "weekdays" && isWeekdayDate(date)));
+  const todayTarget =
+    scheduledTarget > 0
+      ? scheduledTarget
+      : recurringToday
+        ? executionStyle === "toggle"
+          ? 1
+          : getOccurrenceTarget(plan)
+        : null;
+
+  return {
+    tactic,
+    executionStyle,
+    todayActual,
+    todayTarget
+  };
 }
 
 export async function getDashboardData(cycleId?: string, weekNumber?: number, asOfDate?: string) {
@@ -2666,6 +2805,10 @@ export type SchedulingItem = {
   title: string;
   goalTitle: string;
   executionStyle: ExecutionStyle;
+  /** Base tactic target, used when a week has no explicit schedule row. */
+  baseWeekTarget: number;
+  /** Effective targets for every week with an explicit tactic_schedules row. */
+  weekTargets: Record<number, number>;
   /** Weekly target (pool size) for the reference week. */
   weekTarget: number;
   /** Total scheduled value in the reference week (not block count). */
@@ -2683,20 +2826,38 @@ export type SchedulingItem = {
  * (retired dupes etc.) never show up here.
  */
 export async function listSchedulingState(cycleId: string, weekStartISO: string, weekEndISO: string): Promise<SchedulingItem[]> {
-  const rows = await listTactics(cycleId);
-  const blocks = await listCalendarBlocksForRange(cycleId, weekStartISO, weekEndISO);
+  const [rows, blocks, scheduleRecords, referenceWeekNumber] = await Promise.all([
+    listTactics(cycleId),
+    listCalendarBlocksForRange(cycleId, weekStartISO, weekEndISO),
+    pb.collection("tactic_schedules").getFullList(),
+    getCurrentWeekNumber(cycleId, weekStartISO)
+  ]);
+  const schedules = scheduleRecords.map(toTacticSchedule);
   return rows
     .filter(({ tactic }) => tactic.active !== false)
     .map(({ tactic, goalTitle }) => {
       const plan = resolveTacticPlan(tactic);
       const tacticBlocks = blocks.filter((block) => block.tacticId === tactic.id);
       const dates = tacticBlocks.map((block) => block.date).sort();
-      const progress = getSchedulingProgress(plan, tacticBlocks);
+      const baseWeekTarget = normalizeAmount(getPlannedWeeklyTarget(plan));
+      const weekTargets = schedules
+        .filter((schedule) => schedule.tacticId === tactic.id)
+        .reduce<Record<number, number>>((targets, schedule) => {
+          targets[schedule.weekNumber] = normalizeAmount(schedule.plannedTarget ?? baseWeekTarget);
+          return targets;
+        }, {});
+      const progress = getSchedulingProgress(
+        plan,
+        tacticBlocks,
+        referenceWeekNumber === null ? undefined : weekTargets[referenceWeekNumber]
+      );
       return {
         id: tactic.id,
         title: tactic.title,
         goalTitle,
         executionStyle: resolveExecutionStyle(plan, tactic),
+        baseWeekTarget,
+        weekTargets,
         weekTarget: progress.weekTarget,
         scheduled: progress.scheduled,
         remaining: progress.remaining,
@@ -2720,6 +2881,15 @@ export async function undoLatestTacticEntry(tacticId: string, date: string) {
   });
   const latest = entries[0];
   if (!latest) return null;
-  await pb.collection("tactic_entries").delete(latest.id);
-  return latest.id as string;
+  const latestValue = normalizeAmount(Number(latest.value));
+  if (latestValue > 1) {
+    await pb.collection("tactic_entries").update(latest.id, {
+      value: normalizeAmount(latestValue - 1)
+    });
+  } else if (amountsEqual(latestValue, 1)) {
+    await pb.collection("tactic_entries").delete(latest.id);
+  } else {
+    return null;
+  }
+  return String(latest.id);
 }

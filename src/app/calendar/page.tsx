@@ -4,6 +4,7 @@ import type { BacklogTactic, CalendarBlockWithTitle } from "@/app/components/cal
 import {
   addDays,
   getActiveCycle,
+  getCycleWeeks,
   listCalendarBlocksForRange,
   listSchedulingState,
   parseDate,
@@ -59,6 +60,11 @@ export default async function CalendarPage({
   const gridEndISO = toDateString(addDays(startOfIsoWeek(monthEnd), 6));
 
   // Sequential awaits — the PB SDK auto-cancels parallel identical requests on one client.
+  const cycleWeeks = (await getCycleWeeks(cycle.id)).map((week) => ({
+    weekNumber: Number(week.weekNumber),
+    startDate: String(week.startDate),
+    endDate: String(week.endDate)
+  }));
   const blocksRaw = await listCalendarBlocksForRange(cycle.id, gridStartISO, gridEndISO);
   // Scheduling progress always references the current week (Mon–Sun), independent of the shown month.
   const refWeekMonday = startOfIsoWeek(parseDate(referenceDate));
@@ -89,6 +95,10 @@ export default async function CalendarPage({
     trackingType: item.trackingType != null ? String(item.trackingType) : null,
     executionStyle: String(item.executionStyle ?? ""),
     unit: item.unit != null ? String(item.unit) : null,
+    baseWeekTarget: Number(item.baseWeekTarget ?? 0),
+    weekTargets: Object.fromEntries(
+      Object.entries(item.weekTargets ?? {}).map(([weekNumber, target]) => [Number(weekNumber), Number(target)])
+    ),
     weekTarget: Number(item.weekTarget ?? 0)
   }));
 
@@ -99,6 +109,7 @@ export default async function CalendarPage({
         cycleId={cycle.id}
         cycleStart={cycle.startDate}
         cycleEnd={cycle.endDate}
+        cycleWeeks={cycleWeeks}
         monthKey={monthKey}
         prevMonthKey={shiftMonthKey(monthKey, -1)}
         nextMonthKey={shiftMonthKey(monthKey, 1)}

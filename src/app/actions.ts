@@ -8,10 +8,9 @@ import {
   deleteTacticCalendarBlock,
   getActiveCycle,
   getCalendarBlock,
-  getDashboardData,
-  getPlannedWeeklyTarget,
   getTactic,
   getTacticStepDelta,
+  getTacticTodayState,
   listGoals,
   moveTacticCalendarBlock,
   resolveExecutionStyle,
@@ -93,15 +92,15 @@ export async function stepEntryAction(formData: FormData) {
     throw new Error("Invalid delta for today's remaining target");
   }
 
-  const dashboard = await getDashboardData();
-  const todayTactic = dashboard?.todayTactics.find((row) => row.tacticId === tacticId);
-  if (!todayTactic || todayTactic.todayTarget === null || todayTactic.todayTarget <= 0) {
+  const today = todayDateString();
+  const todayState = await getTacticTodayState(tacticId, today);
+  if (!todayState || todayState.todayTarget === null || todayState.todayTarget <= 0) {
     throw new Error("Tactic is not scheduled for today");
   }
 
-  const tactic = await assertTacticInActiveCycle(tacticId);
+  const tactic = todayState.tactic;
   const plan = resolveTacticPlan(tactic, { strict: true });
-  const style = resolveExecutionStyle(plan, tactic, { strict: true });
+  const style = todayState.executionStyle;
   if (style === "toggle") {
     throw new Error("Toggles only go through the Complete path");
   }
@@ -109,8 +108,8 @@ export async function stepEntryAction(formData: FormData) {
   const direction = requestedDelta > 0 ? "increase" : "decrease";
   const allowedDelta = getTacticStepDelta({
     direction,
-    todayActual: todayTactic.todayActual,
-    todayTarget: todayTactic.todayTarget
+    todayActual: todayState.todayActual,
+    todayTarget: todayState.todayTarget
   });
   if (allowedDelta === 0) {
     throw new Error(direction === "increase" ? "Tactic is already complete for today" : "Nothing to subtract today");
@@ -120,10 +119,10 @@ export async function stepEntryAction(formData: FormData) {
   }
 
   if (direction === "decrease" && style === "occurrence") {
-    const undone = await undoLatestTacticEntry(tacticId, todayDateString());
+    const undone = await undoLatestTacticEntry(tacticId, today);
     if (!undone) throw new Error("Nothing to subtract today");
   } else {
-    await addTacticEntry({ tacticId, value: allowedDelta, date: todayDateString() });
+    await addTacticEntry({ tacticId, value: allowedDelta, date: today });
   }
   revalidatePath("/");
   revalidatePath("/today");
@@ -165,9 +164,6 @@ export async function addBlockAction(input: { tacticId: string; date: string; pl
   }
   if (style === "occurrence" && !Number.isInteger(plannedValue)) {
     throw new Error("Occurrence block size must be a whole number");
-  }
-  if (plannedValue > getPlannedWeeklyTarget(plan)) {
-    throw new Error(`Block size cannot exceed the ${getPlannedWeeklyTarget(plan)} ${plan.unit} weekly target`);
   }
   await addTacticCalendarBlock({
     tacticId: input.tacticId,

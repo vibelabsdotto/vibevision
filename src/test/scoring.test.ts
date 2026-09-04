@@ -89,6 +89,23 @@ describe("progress aggregation", () => {
     expect(getTodayProgress(plan, entries, "2026-04-21")).toBe(5);
     expect(getTodayProgress(plan, entries, "2026-04-25")).toBe(0);
   });
+
+  it("aggregates same-day boolean entries when occurrence is explicit", () => {
+    const plan: TacticPlan = {
+      trackingType: "boolean",
+      recurrenceType: "daily",
+      recurrenceCount: 1,
+      targetValue: 1,
+      unit: "done"
+    };
+    const entries = [
+      { tacticId: "t1", date: "2026-04-21", value: 1, completed: true },
+      { tacticId: "t1", date: "2026-04-21", value: 1, completed: true }
+    ];
+
+    expect(getActualProgress(plan, entries, "occurrence")).toBe(2);
+    expect(getTodayProgress(plan, entries, "2026-04-21", "occurrence")).toBe(2);
+  });
 });
 
 describe("weekly targets", () => {
@@ -104,13 +121,15 @@ describe("calendar scheduling progress", () => {
   const calendarCore = Core as unknown as {
     getSchedulingProgress?: (
       plan: TacticPlan,
-      blocks: Array<{ plannedValue: number }>
+      blocks: Array<{ plannedValue: number }>,
+      weeklyTargetOverride?: number
     ) => { weekTarget: number; scheduled: number; remaining: number };
     resolveCalendarBlockValue?: (
       plan: TacticPlan,
       blocks: Array<{ plannedValue: number }>,
       requestedValue: number,
-      executionStyle?: "toggle" | "occurrence" | "volume"
+      executionStyle?: "toggle" | "occurrence" | "volume",
+      weeklyTargetOverride?: number
     ) => number;
   };
   const getSchedulingProgress = calendarCore.getSchedulingProgress;
@@ -152,6 +171,26 @@ describe("calendar scheduling progress", () => {
       scheduled: 4,
       remaining: 6
     });
+  });
+
+  it("uses an explicit weekly target override for scheduling progress", () => {
+    if (!getSchedulingProgress || !resolveCalendarBlockValue) return;
+    const plan: TacticPlan = {
+      trackingType: "duration",
+      recurrenceType: "times_per_week",
+      recurrenceCount: 1,
+      targetValue: 10,
+      unit: "hours"
+    };
+
+    expect(getSchedulingProgress(plan, [{ plannedValue: 3 }], 5)).toEqual({
+      weekTarget: 5,
+      scheduled: 3,
+      remaining: 2
+    });
+    expect(() => resolveCalendarBlockValue(plan, [{ plannedValue: 3 }], 3, "volume", 5)).toThrow(
+      "Only 2 hours remain to schedule this week"
+    );
   });
 
   it("accepts an exact decimal allocation without floating-point drift", () => {
@@ -382,6 +421,28 @@ describe("floor pace", () => {
       })
     ).toBeCloseTo((10 * 3) / 7, 10);
   });
+
+  it("uses floor pace when a quantity tactic explicitly uses occurrence", () => {
+    const plan: TacticPlan = {
+      trackingType: "quantity",
+      recurrenceType: "times_per_week",
+      recurrenceCount: 1,
+      targetValue: 10,
+      unit: "count"
+    };
+
+    expect(
+      getPlannedTargetForDate({
+        plan,
+        executionStyle: "occurrence",
+        fullWeekPlanned: 10,
+        blocks: [],
+        weekStartDate: "2026-04-13",
+        weekEndDate: "2026-04-19",
+        scoringCutoffDate: "2026-04-15"
+      })
+    ).toBe(4);
+  });
 });
 
 describe("entry guards", () => {
@@ -467,6 +528,30 @@ describe("scheduled today tactics", () => {
     expect(rows[0].todayRemaining).toBe(1);
     expect(rows[0].todayLabel).toBe("2 posts scheduled");
     expect(rows[0].isTodayComplete).toBe(false);
+  });
+
+  it("uses explicit occurrence semantics for a boolean daily tactic", () => {
+    const explicitOccurrence: TacticWeekScore = {
+      ...occurrenceRow,
+      tacticId: "daily-occurrence",
+      fullWeekPlanned: 7,
+      trackingType: "boolean",
+      recurrenceType: "daily",
+      recurrenceCount: 1,
+      targetValue: 1,
+      executionStyle: "occurrence"
+    };
+    const todayBlocks = [block("b1", "daily-occurrence", "2026-04-15", 2)];
+    const entries = [
+      { tacticId: "daily-occurrence", date: "2026-04-15", value: 1, completed: true },
+      { tacticId: "daily-occurrence", date: "2026-04-15", value: 1, completed: true }
+    ];
+
+    const rows = buildTodayTactics([explicitOccurrence], entries, "2026-04-15", todayBlocks, todayBlocks);
+
+    expect(rows[0].todayActual).toBe(2);
+    expect(rows[0].todayRemaining).toBe(0);
+    expect(rows[0].isTodayComplete).toBe(true);
   });
 
   it("uses a custom duration block instead of the full weekly tactic target", () => {
