@@ -1,11 +1,21 @@
-import { pbAuthCookieName } from "@/app/lib/crypto";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { apiUrl } from "@/app/lib/env";
 
 /**
- * Logout endpoint. Called as form POST from the layout header.
- * Clears the auth cookie and redirects back to /login.
+ * Logout endpoint. Called as form POST from the sidebar.
+ * Signs out against the API (clears the server session) and redirects to /login.
  */
-export async function POST(request: Request) {
-  const response = new Response(null, { status: 303, headers: { Location: "/login" } });
-  response.headers.append("Set-Cookie", `${pbAuthCookieName()}=; Path=/; Max-Age=0; SameSite=Lax`);
-  return response;
+export async function POST() {
+  const jar = await cookies();
+  try {
+    await fetch(`${apiUrl()}/api/auth/sign-out`, {
+      method: "POST",
+      headers: { cookie: jar.toString() },
+      cache: "no-store"
+    });
+  } catch {
+    // API down — still clear local cookies below.
+  }
+  redirect("/login");
 }

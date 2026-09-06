@@ -149,31 +149,6 @@ export async function DashboardView({ cycleId }: { cycleId?: string }) {
             })}
             {!data.todayTactics.length ? <p className="text-sm text-ink-3">No tactics are due today.</p> : null}
           </div>
-
-          {data.todayScheduledBlocks.length ? (
-            <div className="rounded-[16px] border border-border bg-surface-2/50 p-5">
-              <p className="eyebrow">Scheduled blocks</p>
-              <div className="mt-3 space-y-3">
-                {data.todayScheduledBlocks.slice(0, 5).map((block) => (
-                  <div className="flex items-center justify-between gap-4 border-b border-border pb-3 last:border-b-0 last:pb-0" key={block.id}>
-                    <div>
-                      <p className="font-medium">{block.tacticTitle}</p>
-                      <p className="text-sm text-ink-3">{block.goalTitle}</p>
-                    </div>
-                    <div className="text-right text-sm text-ink-2">
-                      <p>
-                        {block.startTime ?? "Any time"}
-                        {block.endTime ? `-${block.endTime}` : ""}
-                      </p>
-                      <p>
-                        {formatAmount(block.plannedValue)} {block.unit}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
         </div>
       </section>
 
@@ -208,7 +183,7 @@ export async function DashboardView({ cycleId }: { cycleId?: string }) {
                     <div className="min-w-40">
                       <div className="mb-2 flex items-center justify-between text-sm text-ink-2">
                         <span>
-                          {formatAmount(score.actual)}/{formatAmount(score.planned)}
+                          {Math.round(score.actual)}/{Math.round(score.fullWeekPlanned || score.planned)}
                         </span>
                         <span>{formatPercent(score.score)}</span>
                       </div>

@@ -1,0 +1,36 @@
+import { Body, Controller, Get, Param, Put, Query } from '@nestjs/common';
+import type { CycleWeek, CycleWeekListQuery } from './cycle-weeks.service';
+import { CycleWeeksService } from './cycle-weeks.service';
+
+// Auth comes from the global APP_GUARD (contract §3) — no controller guard.
+// Weeks are created by POST /v1/cycles: read + label update only.
+@Controller('v1/cycle-weeks')
+export class CycleWeeksController {
+  constructor(private readonly weeks: CycleWeeksService) {}
+
+  @Get()
+  list(
+    @Query()
+    query: CycleWeekListQuery,
+  ): {
+    cycle_weeks: CycleWeek[];
+    total: number;
+    page: number;
+    limit: number;
+  } {
+    return this.weeks.list(query ?? {});
+  }
+
+  @Get(':id')
+  get(@Param('id') id: string): { cycle_week: CycleWeek } {
+    return { cycle_week: this.weeks.get(id) };
+  }
+
+  @Put(':id')
+  update(
+    @Param('id') id: string,
+    @Body() body: { label?: unknown },
+  ): { cycle_week: CycleWeek } {
+    return { cycle_week: this.weeks.update(id, body ?? {}) };
+  }
+}

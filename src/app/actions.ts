@@ -13,8 +13,6 @@ import {
   getTacticTodayState,
   listGoals,
   moveTacticCalendarBlock,
-  resolveExecutionStyle,
-  resolveTacticPlan,
   todayDateString,
   undoLatestTacticEntry
 } from "@/app/core";
@@ -70,11 +68,7 @@ export async function completeTacticAction(formData: FormData) {
   await requireAuth();
   const tacticId = String(value(formData, "tacticId") ?? "");
   if (!tacticId) throw new Error("Missing tacticId");
-  const tactic = await assertTacticInActiveCycle(tacticId);
-  const plan = resolveTacticPlan(tactic, { strict: true });
-  if (resolveExecutionStyle(plan, tactic, { strict: true }) !== "toggle") {
-    throw new Error("Only toggles go through the Complete path");
-  }
+  await assertTacticInActiveCycle(tacticId);
   await completeTactic(tacticId);
   revalidatePath("/");
   revalidatePath("/today");
@@ -98,8 +92,6 @@ export async function stepEntryAction(formData: FormData) {
     throw new Error("Tactic is not scheduled for today");
   }
 
-  const tactic = todayState.tactic;
-  const plan = resolveTacticPlan(tactic, { strict: true });
   const style = todayState.executionStyle;
   if (style === "toggle") {
     throw new Error("Toggles only go through the Complete path");
@@ -154,21 +146,11 @@ export async function addBlockAction(input: { tacticId: string; date: string; pl
   await requireAuth();
   if (!input.tacticId) throw new Error("Missing tacticId");
   if (!input.date) throw new Error("Missing date");
-  const tactic = await assertTacticInActiveCycle(input.tacticId);
-  const plan = resolveTacticPlan(tactic, { strict: true });
-  const style = resolveExecutionStyle(plan, tactic, { strict: true });
-  if (style === "toggle") throw new Error("Toggles can't be scheduled");
-  const plannedValue = Number(input.plannedValue);
-  if (!Number.isFinite(plannedValue) || plannedValue <= 0) {
-    throw new Error("Block size must be greater than 0");
-  }
-  if (style === "occurrence" && !Number.isInteger(plannedValue)) {
-    throw new Error("Occurrence block size must be a whole number");
-  }
+  await assertTacticInActiveCycle(input.tacticId);
   await addTacticCalendarBlock({
     tacticId: input.tacticId,
     date: input.date,
-    plannedValue
+    plannedValue: input.plannedValue
   });
   revalidatePath("/calendar");
   revalidatePath("/");

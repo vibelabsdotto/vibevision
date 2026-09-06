@@ -1,12 +1,27 @@
 /**
- * vibevision commands — thin adapters over the app's core functions (src/app/core).
- * The CLI never duplicates business logic: it points the shared PocketBase
- * client at the configured instance (lib/client.ts) and calls the same
- * functions the web app renders from.
+ * vibevision commands — thin adapters over the VibeVision API
+ * (contract docs/CONTRACT.md §4). No business logic here: scoring,
+ * validation and progress live server-side; the CLI maps snake_case
+ * rows to the human-readable tables below.
  */
-import { UsageError, assertInstance, connect, health } from "./client";
-import { pb } from "@/app/lib/pb";
-import * as Core from "@/app/core";
+import type {
+  Cycle,
+  DashboardData,
+  Goal,
+  LagIndicator,
+  Tactic
+} from "@/app/core/shapes";
+import {
+  mapCycle,
+  mapDashboard,
+  mapGoal,
+  mapLag,
+  mapScore,
+  mapTactic,
+  type ApiRow
+} from "@/app/core/shapes";
+import { apiFetch } from "./api";
+import { assertInstance, connect, health } from "./client";
 
 export type Ctx = { instance: string; json: boolean };
 /** Parsed flag bag — `instance` and `json` are reserved, everything else is a command flag. */
@@ -21,11 +36,8 @@ const EXECUTION_STYLES = ["toggle", "occurrence", "volume"] as const;
 type ExecutionStyle = (typeof EXECUTION_STYLES)[number];
 
 /**
- * Execution style derivation (same rule as core: missing `executionStyle`
+ * Execution style derivation (same rule as the API: missing `executionStyle`
  * is derived lazily, never backfilled).
- *   boolean × daily|weekdays          → toggle
- *   boolean × times_per_week|once     → occurrence
- *   quantity|duration × anything      → volume
  */
 function deriveExecutionStyle(trackingType: string, recurrenceType: string): ExecutionStyle {
   if (trackingType === "boolean" && (recurrenceType === "daily" || recurrenceType === "weekdays")) return "toggle";
@@ -92,10 +104,14 @@ function cycleLabel(cycle: { id: string; title: string; status: string }): strin
   return `${cycle.title} (${cycle.id.slice(0, 13)}${cycle.status === "active" ? ", active" : ""})`;
 }
 
+function todayDateString(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 // ---------------------------------------------------------------------- auth
 
 export async function cmdHealth(args: Args, ctx: Ctx): Promise<void> {
-  // health is the one command that works without an API key — it hits the public /api/health
+  // health is the one command that works without a token — it hits the public /health
   const instance = assertInstance(args.instance);
   const result = await health(instance);
   if (ctx.json) {
@@ -108,14 +124,71 @@ export async function cmdHealth(args: Args, ctx: Ctx): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------- helpers (API reads)
+
+async function listCycles(): Promise<Cycle[]> {
+  const data = await apiFetch<{ cycles: ApiRow[] }>("GET", "/v1/cycles?limit=100");
+  return data.cycles.map(mapCycle);
+}
+
+async function getActiveCycle(): Promise<Cycle | null> {
+  const data = await apiFetch<{ cycle: ApiRow | null }>("GET", "/v1/cycles/active");
+  return data.cycle ? mapCycle(data.cycle) : null;
+}
+
+async function getCycleById(id: string): Promise<Cycle | null> {
+  try {
+    const data = await apiFetch<{ cycle: ApiRow }>("GET", `/v1/cycles/${id}`);
+    return mapCycle(data.cycle);
+  } catch (err) {
+    if ((err as { status?: number }).status === 404) return null;
+    throw err;
+  }
+}
+
+async function currentWeek(cycleId: string, date = todayDateString()): Promise<number> {
+  const data = await apiFetch<{ cycle_weeks: ApiRow[] }>(
+    "GET",
+    `/v1/cycle-weeks?cycle_id=${encodeURIComponent(cycleId)}&limit=100`
+  );
+  const week = data.cycle_weeks.find((w) => String(w.start_date) <= date && String(w.end_date) >= date);
+  return week ? Number(week.week_number) : 1;
+}
+
+async function listGoals(cycleId: string): Promise<Goal[]> {
+  const data = await apiFetch<{ goals: ApiRow[] }>(
+    "GET",
+    `/v1/goals?cycle_id=${encodeURIComponent(cycleId)}&limit=100`
+  );
+  return data.goals.map(mapGoal);
+}
+
+async function listLags(goalId: string): Promise<LagIndicator[]> {
+  const data = await apiFetch<{ lag_indicators: ApiRow[] }>(
+    "GET",
+    `/v1/lag-indicators?goal_id=${encodeURIComponent(goalId)}&limit=100`
+  );
+  return data.lag_indicators.map(mapLag);
+}
+
+async function getTactic(tacticId: string): Promise<Tactic | null> {
+  try {
+    const data = await apiFetch<{ tactic: ApiRow }>("GET", `/v1/tactics/${tacticId}`);
+    return mapTactic(data.tactic);
+  } catch (err) {
+    if ((err as { status?: number }).status === 404) return null;
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------- cycles
 
 export async function cmdCycles(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
-  const cycles = await Core.listCycles();
+  const cycles = await listCycles();
   if (ctx.json) return emit(ctx, "", { instance, cycles });
   if (cycles.length === 0) return console.log("No cycles yet. Create one with: vibevision cycle create --title \"…\" --start 2026-09-07");
-  const active = await Core.getActiveCycle();
+  const active = await getActiveCycle();
   for (const c of cycles) {
     const marker = c.id === active?.id ? "* " : "  ";
     console.log(`${marker} ${pad(c.title, 34)} ${c.status.padEnd(9)} ${c.startDate} → ${c.endDate}`);
@@ -127,25 +200,31 @@ export async function cmdCycles(args: Args, ctx: Ctx): Promise<void> {
 export async function cmdCycleCreate(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
   if (!args.title || !args.start) throw new Error("vibevision cycle create needs --title and --start (ISO date, e.g. 2026-09-07)");
-  const cycle = await Core.createCycle({
+  const data = await apiFetch<{ cycle: ApiRow }>("POST", "/v1/cycles", {
     title: args.title,
-    startDate: args.start,
+    start_date: args.start,
     vision: args.vision,
     status: args.activate ? "active" : "planned"
   });
+  const cycle = mapCycle(data.cycle);
   emit(ctx, `Created cycle "${cycle.title}" ${cycle.id} (${cycle.startDate} → ${cycle.endDate})${args.activate ? " and activated it" : ""}`, { instance, cycle });
 }
 
 export async function cmdCycleActivate(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
   if (!args.slug && !args.id) throw new Error("vibevision cycle activate needs --slug <slug> or --id <cycleId> (see: vibevision cycles)");
-  const cycle = args.slug
-    ? await Core.activateCycleBySlug(args.slug)
-    : (await Core.getCycleById(args.id)) ?? (() => {
-        throw new Error(`Cycle not found: ${args.id}`);
-      })();
-  if (!args.slug) await Core.activateCycleById(cycle.id);
-  emit(ctx, `Activated "${cycle.title}" (${cycle.id})`, { instance, cycle });
+  let cycle: Cycle | null = null;
+  if (args.slug) {
+    const cycles = await listCycles();
+    cycle = cycles.find((c) => c.slug === args.slug) ?? null;
+    if (!cycle) throw new Error(`Cycle not found: ${args.slug}`);
+  } else {
+    cycle = await getCycleById(args.id);
+    if (!cycle) throw new Error(`Cycle not found: ${args.id}`);
+  }
+  const data = await apiFetch<{ cycle: ApiRow }>("POST", `/v1/cycles/${cycle.id}/activate`, {});
+  const activated = mapCycle(data.cycle);
+  emit(ctx, `Activated "${activated.title}" (${activated.id})`, { instance, cycle: activated });
 }
 
 export async function cmdCycleUpdate(args: Args, ctx: Ctx): Promise<void> {
@@ -154,7 +233,12 @@ export async function cmdCycleUpdate(args: Args, ctx: Ctx): Promise<void> {
   if (!id) throw new Error("vibevision cycle update needs --id <cycleId> (see: vibevision cycles)");
   if (args.title === undefined && args.vision === undefined && args.start === undefined)
     throw new Error("vibevision cycle update needs at least one of --title, --vision, --start");
-  const cycle = await Core.updateCycle({ id, title: args.title, vision: args.vision, startDate: args.start });
+  const data = await apiFetch<{ cycle: ApiRow }>("PUT", `/v1/cycles/${id}`, {
+    title: args.title,
+    vision: args.vision,
+    start_date: args.start
+  });
+  const cycle = mapCycle(data.cycle);
   const changed = [
     args.title !== undefined ? `title="${cycle.title}"` : null,
     args.vision !== undefined ? "vision updated" : null,
@@ -170,11 +254,11 @@ export async function cmdCycleUpdate(args: Args, ctx: Ctx): Promise<void> {
 
 export async function cmdGoals(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
-  const cycle = args.id ? await Core.getCycleById(args.id) : await Core.getActiveCycle();
+  const cycle = args.id ? await getCycleById(args.id) : await getActiveCycle();
   if (!cycle) throw new Error("No active cycle. Pass --cycle <id> or vibevision cycle activate …");
   const rows = [];
-  for (const goal of await Core.listGoals(cycle.id)) {
-    const lags = await Core.listLags(goal.id);
+  for (const goal of await listGoals(cycle.id)) {
+    const lags = await listLags(goal.id);
     const done = lags.filter((l) => l.achieved).length;
     rows.push({
       id: goal.id,
@@ -198,9 +282,14 @@ export async function cmdGoals(args: Args, ctx: Ctx): Promise<void> {
 
 export async function cmdGoalAdd(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
-  const cycle = args.cycle ? await Core.getCycleById(args.cycle) : await Core.getActiveCycle();
+  const cycle = args.cycle ? await getCycleById(args.cycle) : await getActiveCycle();
   if (!cycle) throw new Error("No active cycle. Pass --cycle <id>.");
-  const goal = await Core.addGoal(cycle.id, args.title!, args.description);
+  const data = await apiFetch<{ goal: ApiRow }>("POST", "/v1/goals", {
+    cycle_id: cycle.id,
+    title: args.title,
+    description: args.description
+  });
+  const goal = mapGoal(data.goal);
   emit(ctx, `Added goal "${goal.title}" ${goal.id} to "${cycle.title}"`, { instance, goal });
 }
 
@@ -208,19 +297,33 @@ export async function cmdGoalAdd(args: Args, ctx: Ctx): Promise<void> {
 
 export async function cmdTactics(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
+  const cycle = args.cycle ? await getCycleById(args.cycle) : await getActiveCycle();
+  if (!cycle) throw new Error("No active cycle. Pass --cycle <id>.");
+  const goals = await listGoals(cycle.id);
+  const goalTitles = new Map(goals.map((g) => [g.id, g.title]));
   const rows = [];
-  const list = await Core.listTactics();
-  for (const { tactic, goalTitle } of list) {
-    const plan = tactic.recurrenceType === "once" ? `once` : `${tactic.targetValue}${tactic.unit ? " " + tactic.unit : ""} ${tactic.recurrenceType}`;
-    rows.push({
-      id: tactic.id,
-      tactic: tactic.title,
-      plan,
-      goal: goalTitle,
-      weeks: tactic.startsWeek || tactic.endsWeek ? `W${tactic.startsWeek ?? "?"}–${tactic.endsWeek ?? "?"}` : "all",
-      on: tactic.active ? "yes" : "no",
-      executionStyle: getExecutionStyle(tactic)
-    });
+  for (const goal of goals) {
+    const data = await apiFetch<{ tactics: ApiRow[] }>(
+      "GET",
+      `/v1/tactics?goal_id=${encodeURIComponent(goal.id)}&limit=100`
+    );
+    for (const row of data.tactics) {
+      const tactic = mapTactic(row);
+      const plan = tactic.recurrenceType === "once" ? `once` : `${tactic.targetValue}${tactic.unit ? " " + tactic.unit : ""} ${tactic.recurrenceType}`;
+      rows.push({
+        id: tactic.id,
+        tactic: tactic.title,
+        plan,
+        goal: goalTitles.get(goal.id) ?? "",
+        weeks: tactic.startsWeek || tactic.endsWeek ? `W${tactic.startsWeek ?? "?"}–${tactic.endsWeek ?? "?"}` : "all",
+        on: tactic.active ? "yes" : "no",
+        executionStyle: getExecutionStyle({
+          executionStyle: tactic.executionStyle,
+          trackingType: tactic.trackingType,
+          recurrenceType: tactic.recurrenceType
+        })
+      });
+    }
   }
   if (ctx.json) return emit(ctx, "", { instance, tactics: rows });
   console.log(table(rows, ["id", "tactic", "plan", "goal", "weeks", "on"]));
@@ -269,26 +372,36 @@ export async function cmdTacticAdd(args: Args, ctx: Ctx): Promise<void> {
   } else {
     executionStyle = deriveExecutionStyle(trackingType, recurrenceType);
   }
+  // boolean toggles imply target 1; quantity/duration need an explicit --target.
+  const targetValue = args.target
+    ? Number(args.target)
+    : trackingType === "boolean"
+      ? 1
+      : undefined;
   const startsWeekRaw = flag(args, "starts-week", "startsWeek");
   const endsWeekRaw = flag(args, "ends-week", "endsWeek");
-  const tactic = await Core.addTactic({
-    goalId: args.goal,
+  // unit is NOT NULL per contract; boolean toggles get a sane default.
+  const unit = args.unit ?? (trackingType === "boolean" ? "checkins" : undefined);
+  const data = await apiFetch<{ tactic: ApiRow }>("POST", "/v1/tactics", {
+    goal_id: args.goal,
     title: args.title,
-    trackingType,
-    recurrenceType,
-    recurrenceCount: args.count ? Number(args.count) : undefined,
-    targetValue: args.target ? Number(args.target) : undefined,
-    unit: args.unit,
-    week: args.week ? Number(args.week) : undefined,
-    startsWeek: startsWeekRaw ? Number(startsWeekRaw) : undefined,
-    endsWeek: endsWeekRaw ? Number(endsWeekRaw) : undefined
+    tracking_type: trackingType,
+    recurrence_type: recurrenceType,
+    execution_style: executionStyle,
+    recurrence_count: args.count ? Number(args.count) : undefined,
+    target_value: targetValue,
+    unit,
+    starts_week: startsWeekRaw ? Number(startsWeekRaw) : undefined,
+    ends_week: endsWeekRaw ? Number(endsWeekRaw) : undefined
   });
-  // persist the (explicit or derived) style on the record; core reads it
-  // lazily when present. Best-effort: the tactic itself is already created.
-  try {
-    await pb.collection("tactics").update(tactic.id, { executionStyle });
-  } catch {
-    /* column may predate the migration on this instance — style still reported below */
+  const tactic = mapTactic(data.tactic);
+  if (args.week) {
+    await apiFetch("POST", "/v1/tactic-schedules", {
+      tactic_id: tactic.id,
+      week_number: Number(args.week),
+      planned_target: args.target ? Number(args.target) : tactic.targetValue,
+      required: true
+    });
   }
   emit(ctx, `Added tactic "${tactic.title}" ${tactic.id} (style ${executionStyle})`, { instance, tactic: { ...tactic, executionStyle } });
 }
@@ -299,8 +412,6 @@ export async function cmdTacticAdd(args: Args, ctx: Ctx): Promise<void> {
  * Enrich a today row for --json: executionStyle (stored or derived),
  * weekRemaining (weekly remainder), and the "pool" kind for flexible
  * weekly-pool tactics (occurrence/volume without a fixed daily target).
- * BREAKING vs earlier builds: todayKind can now be "pool", in which case
- * todayTarget is null and the actionable number is weekRemaining.
  */
 function enrichTodayRow<T extends Record<string, any>>(row: T): T & Record<string, unknown> {
   const executionStyle = getExecutionStyle(row as { executionStyle?: unknown; trackingType?: unknown; recurrenceType?: unknown });
@@ -316,10 +427,16 @@ function enrichTodayRow<T extends Record<string, any>>(row: T): T & Record<strin
   };
 }
 
+async function getDashboard(cycleId?: string): Promise<DashboardData> {
+  const params = cycleId ? `?cycle_id=${encodeURIComponent(cycleId)}` : "";
+  const data = await apiFetch<{ dashboard: ApiRow | null }>("GET", `/v1/dashboard${params}`);
+  if (!data.dashboard) throw new Error("No active cycle found.");
+  return mapDashboard(data.dashboard);
+}
+
 export async function cmdToday(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
-  const dash = await Core.getDashboardData();
-  if (!dash) throw new Error("No active cycle found.");
+  const dash = await getDashboard(args.cycle);
   if (ctx.json) {
     const today = dash.todayTactics.map((t) => enrichTodayRow(t as unknown as Record<string, unknown>));
     return emit(ctx, "", { instance, today, summary: dash.todaySummary, scheduled: dash.todayScheduledBlocks });
@@ -340,11 +457,14 @@ export async function cmdToday(args: Args, ctx: Ctx): Promise<void> {
 
 export async function cmdScore(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
-  const cycle = args.cycle ? await Core.getCycleById(args.cycle) : await Core.getActiveCycle();
+  const cycle = args.cycle ? await getCycleById(args.cycle) : await getActiveCycle();
   if (!cycle) throw new Error("No active cycle. Pass --cycle <id>.");
-  const week = args.week ? Number(args.week) : (await Core.getCurrentWeekNumber(cycle.id)) ?? 1;
+  const week = args.week ? Number(args.week) : await currentWeek(cycle.id);
   const asOfDate = flag(args, "as-of", "asOf", "asOfDate");
-  const score = await Core.getWeekScore(cycle.id, week, { asOfDate });
+  const params = new URLSearchParams({ week: String(week) });
+  if (asOfDate) params.set("as_of", asOfDate);
+  const data = await apiFetch<{ score: ApiRow }>("GET", `/v1/cycles/${cycle.id}/score?${params}`);
+  const score = mapScore(data.score);
   if (ctx.json) {
     const tacticScores = score.tacticScores.map((t) => ({ ...t, executionStyle: getExecutionStyle(t) }));
     return emit(ctx, "", { instance, cycle: cycle.id, week, score: { ...score, tacticScores } });
@@ -367,12 +487,15 @@ export async function cmdScore(args: Args, ctx: Ctx): Promise<void> {
 
 export async function cmdReport(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
-  const cycle = args.cycle ? await Core.getCycleById(args.cycle) : await Core.getActiveCycle();
+  const cycle = args.cycle ? await getCycleById(args.cycle) : await getActiveCycle();
   if (!cycle) throw new Error("No active cycle. Pass --cycle <id>.");
-  const week = args.week ? Number(args.week) : (await Core.getCurrentWeekNumber(cycle.id)) ?? 1;
-  const report = await Core.getWeekReport(cycle.id, week);
-  if (ctx.json) return emit(ctx, "", { instance, cycle: cycle.id, week, report });
-  console.log(Core.renderWeekReportMarkdown(report));
+  const week = args.week ? Number(args.week) : await currentWeek(cycle.id);
+  if (ctx.json) {
+    const data = await apiFetch<unknown>("GET", `/v1/cycles/${cycle.id}/weeks/${week}/report`);
+    return emit(ctx, "", { instance, cycle: cycle.id, week, report: data });
+  }
+  const markdown = await apiFetch<string>("GET", `/v1/cycles/${cycle.id}/weeks/${week}/report?format=markdown`);
+  console.log(markdown);
 }
 
 // ---------------------------------------------------------------------- log (entries + check-ins)
@@ -393,7 +516,7 @@ export async function cmdLogEntry(args: Args, ctx: Ctx): Promise<void> {
   }
   const instance = connect(args.instance);
   if (!args.tactic) throw new Error("vibevision log entry needs --tactic <id> (see: vibevision tactics)");
-  const tactic = await Core.getTactic(args.tactic);
+  const tactic = await getTactic(args.tactic);
   if (!tactic) throw new Error(`Tactic not found: ${args.tactic}`);
   const executionStyle = getExecutionStyle(tactic);
   const trackingType = String(tactic.trackingType);
@@ -408,61 +531,78 @@ export async function cmdLogEntry(args: Args, ctx: Ctx): Promise<void> {
   } else if (trackingType === "duration") {
     if (value === undefined) throw new Error("duration tactics need --value <minutes> (e.g. vibevision log entry --tactic <id> --value 30)");
   }
-  const entry = await Core.addTacticEntry({
-    tacticId: args.tactic,
+  const rawDate = args.date ?? todayDateString();
+  const data = await apiFetch<{ tactic_entry: ApiRow }>("POST", "/v1/entries/log", {
+    tactic_id: args.tactic,
     value,
     note: args.note,
-    date: args.date ?? Core.todayDateString()
+    date: rawDate === "today" ? todayDateString() : rawDate
   });
-  emit(ctx, `Logged entry on "${tactic.title}" (entry ${String(entry.id ?? "").slice(0, 13)}${value != null ? `, value ${value}` : ""})`, { instance, entry });
+  emit(ctx, `Logged entry on "${tactic.title}" (entry ${String(data.tactic_entry.id ?? "").slice(0, 13)}${value != null ? `, value ${value}` : ""})`, { instance, entry: data.tactic_entry });
 }
 
 export async function cmdLogComplete(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
   if (!args.tactic) throw new Error("vibevision log complete needs --tactic <id>");
-  const entry = await Core.completeTactic(args.tactic);
-  emit(ctx, `Marked "${(await Core.getTactic(args.tactic))?.title ?? args.tactic}" complete (entry ${String(entry.id ?? "").slice(0, 13)})`, { instance, entry });
+  const data = await apiFetch<{ tactic_entry: ApiRow }>("POST", "/v1/entries/log", {
+    tactic_id: args.tactic,
+    value: 1,
+    completed: true,
+    date: todayDateString()
+  });
+  const tactic = await getTactic(args.tactic);
+  emit(ctx, `Marked "${tactic?.title ?? args.tactic}" complete (entry ${String(data.tactic_entry.id ?? "").slice(0, 13)})`, { instance, entry: data.tactic_entry });
 }
 
 export async function cmdLogMorning(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
   const oneThing = flag(args, "one-thing", "oneThing");
-  const log = await Core.morning({ oneThing, stress: args.stress != null ? Number(args.stress) : undefined, date: args.date });
-  emit(ctx, `Morning check-in saved${oneThing ? ` — one thing: ${oneThing}` : ""}`, { instance, log });
+  const data = await apiFetch<{ daily_log: ApiRow }>("POST", "/v1/daily-logs/checkin", {
+    kind: "morning",
+    one_thing: oneThing,
+    stress_level: args.stress != null ? Number(args.stress) : undefined,
+    date: args.date
+  });
+  emit(ctx, `Morning check-in saved${oneThing ? ` — one thing: ${oneThing}` : ""}`, { instance, log: data.daily_log });
 }
 
 export async function cmdLogEvening(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
   const deepWorkRaw = flag(args, "deep-work", "deepWork");
-  const log = await Core.evening({
-    agency: args.agency != null ? Number(args.agency) : undefined,
-    stress: args.stress != null ? Number(args.stress) : undefined,
+  const data = await apiFetch<{ daily_log: ApiRow }>("POST", "/v1/daily-logs/checkin", {
+    kind: "evening",
+    agency_score: args.agency != null ? Number(args.agency) : undefined,
+    stress_level: args.stress != null ? Number(args.stress) : undefined,
     wins: args.wins,
     avoidance: args.avoidance,
     notes: args.notes,
-    deepWorkMinutes: deepWorkRaw != null ? Number(deepWorkRaw) : undefined,
-    comfortZoneDone: args.comfort === "true",
+    deep_work_minutes: deepWorkRaw != null ? Number(deepWorkRaw) : undefined,
+    comfort_zone_done: args.comfort === "true",
     date: args.date
   });
-  emit(ctx, `Evening check-in saved`, { instance, log });
+  emit(ctx, `Evening check-in saved`, { instance, log: data.daily_log });
 }
 
 export async function cmdLogList(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
-  const cycle = args.cycle ? await Core.getCycleById(args.cycle) : await Core.getActiveCycle();
+  const cycle = args.cycle ? await getCycleById(args.cycle) : await getActiveCycle();
   if (!cycle) throw new Error("No active cycle. Pass --cycle <id>.");
-  const date = args.date ?? (await Core.todayDateString());
-  const log = await Core.getDailyLog(cycle.id, date);
+  const date = args.date ?? todayDateString();
+  const data = await apiFetch<{ daily_log: ApiRow | null }>(
+    "GET",
+    `/v1/daily-logs?cycle_id=${encodeURIComponent(cycle.id)}&date=${encodeURIComponent(date)}`
+  );
+  const log = data.daily_log;
   if (ctx.json) return emit(ctx, "", { instance, cycle: cycle.id, date, log });
   if (!log) return console.log(`No log for ${date}.`);
   const lines = [
     `Log ${date} — ${cycleLabel(cycle)}`,
-    `  one thing:   ${log.oneThing ?? "—"}`,
-    `  stress:      ${log.stressLevel ?? "—"}`,
-    `  agency:      ${log.agencyScore ?? "—"}`,
-    `  deep work:   ${log.deepWorkMinutes} min`,
-    `  comfort:     ${log.comfortZoneDone ? "done" : "not done"}`,
-    `  avoidance:   ${log.avoidanceTrigger ?? "—"}`,
+    `  one thing:   ${log.one_thing ?? "—"}`,
+    `  stress:      ${log.stress_level ?? "—"}`,
+    `  agency:      ${log.agency_score ?? "—"}`,
+    `  deep work:   ${log.deep_work_minutes} min`,
+    `  comfort:     ${Number(log.comfort_zone_done) === 1 ? "done" : "not done"}`,
+    `  avoidance:   ${log.avoidance_trigger ?? "—"}`,
     `  notes:       ${log.notes ?? "—"}`
   ];
   console.log(lines.join("\n"));
@@ -472,18 +612,21 @@ export async function cmdLogList(args: Args, ctx: Ctx): Promise<void> {
 
 export async function cmdDashboard(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
-  const cycle = args.cycle ? await Core.getCycleById(args.cycle) : await Core.getActiveCycle();
+  const cycle = args.cycle ? await getCycleById(args.cycle) : await getActiveCycle();
   if (!cycle) throw new Error("No active cycle. Pass --cycle <id>.");
-  const week = args.week ? Number(args.week) : undefined;
+  const params = new URLSearchParams({ cycle_id: cycle.id });
+  if (args.week) params.set("as_of", args.week);
   const asOfDate = flag(args, "as-of", "asOf", "asOfDate");
-  const dash = await Core.getDashboardData(cycle.id, week, asOfDate);
-  if (!dash) throw new Error("No cycle data found.");
+  if (asOfDate) params.set("as_of", asOfDate);
+  const data = await apiFetch<{ dashboard: ApiRow | null }>(`GET`, `/v1/dashboard${params}`);
+  if (!data.dashboard) throw new Error("No cycle data found.");
+  const dash = mapDashboard(data.dashboard);
   if (ctx.json) return emit(ctx, "", { instance, dashboard: dash });
   const pct = (n: number) => `${Math.round(n * 100)}%`;
   console.log(`DASHBOARD — ${cycleLabel(cycle)}`);
   console.log(`week ${dash.currentWeek}/12 · ${dash.daysLeft} days left · score ${pct(dash.score.weeklyScore)} (${dash.score.status})`);
   for (const g of dash.goals) {
-    const lags = (g as { lagIndicators?: Core.LagIndicator[] }).lagIndicators ?? [];
+    const lags = (g as { lagIndicators?: { title: string; targetValue: number | null; currentValue: number | null; unit: string | null; achieved: boolean }[] }).lagIndicators ?? [];
     console.log(`${indent}• ${g.title} ${g.status ? `[${g.status}]` : ""}`);
     for (const lag of lags) {
       const progress =
@@ -500,13 +643,51 @@ export async function cmdDashboard(args: Args, ctx: Ctx): Promise<void> {
 export async function cmdLagUpdate(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
   if (!args.lag) throw new Error("vibevision lag update needs --lag <id> and --value <n>");
-  const lag = await Core.updateLag(args.lag, Number(args.value));
+  const data = await apiFetch<{ lag_indicator: ApiRow }>("PUT", `/v1/lag-indicators/${args.lag}`, {
+    current_value: Number(args.value)
+  });
+  const lag = mapLag(data.lag_indicator);
   emit(ctx, `Updated lag "${lag.title}" → ${lag.currentValue} ${lag.unit ?? ""}`, { instance, lag });
 }
 
 export async function cmdLagDone(args: Args, ctx: Ctx): Promise<void> {
   const instance = connect(args.instance);
   if (!args.lag) throw new Error("vibevision lag done needs --lag <id>");
-  const lag = await Core.markLagDone(args.lag);
+  const data = await apiFetch<{ lag_indicator: ApiRow }>("PUT", `/v1/lag-indicators/${args.lag}/achieve`, {});
+  const lag = mapLag(data.lag_indicator);
   emit(ctx, `Marked lag "${lag.title}" achieved`, { instance, lag });
+}
+
+// ---------------------------------------------------------------------- tokens
+
+export async function cmdTokensCreate(args: Args, ctx: Ctx): Promise<void> {
+  const instance = connect(args.instance);
+  const name = args.name ?? `cli-${todayDateString()}`;
+  const data = await apiFetch<{ id: string; token: string; prefix: string }>("POST", "/v1/tokens", { name });
+  emit(ctx, `Token created (${data.prefix}…). Store it now — it won't be shown again:\n${data.token}`, {
+    instance,
+    id: data.id,
+    prefix: data.prefix
+  });
+}
+
+export async function cmdTokensLs(args: Args, ctx: Ctx): Promise<void> {
+  const instance = connect(args.instance);
+  const data = await apiFetch<{ tokens: Array<Record<string, unknown>> }>("GET", "/v1/tokens");
+  if (ctx.json) return emit(ctx, "", { instance, tokens: data.tokens });
+  if (!data.tokens.length) return console.log("No tokens yet. Create one with: vibevision tokens create --name <label>");
+  console.log(table(data.tokens.map((t) => ({
+    id: String(t.id).slice(0, 13),
+    name: String(t.name ?? ""),
+    prefix: `${String(t.prefix ?? "")}…`,
+    last_used: String(t.last_used_at ?? "never")
+  })), ["id", "name", "prefix", "last_used"]));
+}
+
+export async function cmdTokensRevoke(args: Args, ctx: Ctx): Promise<void> {
+  const instance = connect(args.instance);
+  const id = args.id ?? args.token;
+  if (!id) throw new Error("vibevision tokens revoke needs --id <tokenId> (see: vibevision tokens ls)");
+  await apiFetch("DELETE", `/v1/tokens/${id}`);
+  emit(ctx, `Revoked token ${id}`, { instance, id });
 }

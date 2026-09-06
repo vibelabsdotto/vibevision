@@ -1,41 +1,120 @@
-import { pb } from "@/app/lib/pb";
-import { SETTINGS_KEY_ACTIVE_CYCLE, getSetting, setSetting } from "@/app/core/settings";
+/**
+ * VibeVision web core — thin API client over the NestJS backend (contract
+ * docs/CONTRACT.md §4). camelCase shapes for pages/components; the API speaks
+ * snake_case, mapped at the boundary. Scoring/validation live in the API.
+ */
+import { ApiError, serverApiFetch } from "@/app/lib/api";
+import { sessionCookie } from "@/app/lib/server-auth";
+import { todayDateString } from "@/app/lib/format";
 
-export { SETTINGS_KEY_ACTIVE_CYCLE, getSetting, setSetting } from "@/app/core/settings";
+export { ApiError };
+export {
+  amountsEqual,
+  formatAmount,
+  formatPercent,
+  getTacticStepDelta,
+  normalizeAmount,
+  todayDateString,
+  parseDate,
+  toDateString,
+  addDays,
+  startOfIsoWeek,
+  slugify
+} from "@/app/lib/format";
 
-export type Cycle = {
-  id: string;
-  slug: string;
-  title: string;
-  vision: string | null;
-  startDate: string;
-  endDate: string;
-  status: string;
-  createdAt: string;
-  updatedAt: string;
-};
+// ---------------------------------------------------------------- types & mappers (shared, Next-free)
+import {
+  mapCycle,
+  mapWeek,
+  mapGoal,
+  mapLag,
+  mapTactic,
+  mapTacticScore,
+  mapTodayTactic,
+  mapScore,
+  mapDailyLog,
+  mapBlock,
+  mapBlockWithTitles,
+  mapDashboard,
+  mapReview
+} from "./shapes";
+import type {
+  TrackStatus,
+  Cycle,
+  CycleWeek,
+  Goal,
+  LagIndicator,
+  Tactic,
+  TacticWeekScore,
+  TodayTacticProgress,
+  TacticTodayState,
+  DailyLog,
+  CalendarBlock,
+  CalendarBlockWithTitles,
+  SchedulingItem,
+  WeekScore,
+  TodaySummary,
+  TodayScheduledBlock,
+  DashboardData,
+  WeeklyReview,
+  WeekReportEntry,
+  WeekReport,
+  ApiRow,
+} from "./shapes";
+export type {
+  TrackStatus,
+  Cycle,
+  CycleWeek,
+  Goal,
+  LagIndicator,
+  Tactic,
+  TacticWeekScore,
+  TodayTacticProgress,
+  TacticTodayState,
+  DailyLog,
+  CalendarBlock,
+  CalendarBlockWithTitles,
+  SchedulingItem,
+  WeekScore,
+  TodaySummary,
+  TodayScheduledBlock,
+  DashboardData,
+  WeeklyReview,
+  WeekReportEntry,
+  WeekReport,
+  ApiRow,
+} from "./shapes";
 
-export type CycleWeek = {
-  id: string;
-  cycleId: string;
-  weekNumber: number;
-  startDate: string;
-  endDate: string;
-  label: string;
-};
+// ---------------------------------------------------------------- transport
 
-function toCycle(record: Record<string, unknown>): Cycle {
-  return {
-    id: String(record.id),
-    slug: String(record.slug),
-    title: String(record.title),
-    vision: (record.vision as string) ?? null,
-    startDate: String(record.startDate),
-    endDate: String(record.endDate),
-    status: String(record.status),
-    createdAt: String(record.created),
-    updatedAt: String(record.updated)
-  };
+async function get<T>(path: string): Promise<T> {
+  return serverApiFetch<T>(path, await sessionCookie());
+}
+
+async function send<T>(method: string, path: string, body?: unknown): Promise<T> {
+  return serverApiFetch<T>(path, await sessionCookie(), { method, body });
+}
+
+// ---------------------------------------------------------------- cycles & weeks
+
+export async function listCycles(): Promise<Cycle[]> {
+  const data = await get<{ cycles: ApiRow[]; total: number }>("/v1/cycles?limit=100");
+  return data.cycles.map(mapCycle);
+}
+
+export async function getCycleById(cycleId: string): Promise<Cycle | null> {
+  try {
+    const data = await get<{ cycle: ApiRow }>(`/v1/cycles/${cycleId}`);
+    return mapCycle(data.cycle);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+export async function getActiveCycle(): Promise<Cycle | null> {
+  const data = await get<{ cycle: ApiRow | null }>("/v1/cycles/active");
+  return data.cycle ? mapCycle(data.cycle) : null;
 }
 
 export async function createCycle(input: {
@@ -45,789 +124,113 @@ export async function createCycle(input: {
   status?: string;
   slug?: string;
 }): Promise<Cycle> {
-  const start = startOfIsoWeek(parseDate(input.startDate));
-  const end = addDays(start, 83);
-  const slugBase = input.slug ?? slugify(input.title);
-  let slug = slugBase;
-  let index = 1;
-  while (await pb.collection("cycles").getFirstListItem(pb.filter("slug = {:s}", { s: slug })).catch(() => null)) {
-    index += 1;
-    slug = `${slugBase}-${index}`;
-  }
-
-  const cycle = await pb.collection("cycles").create({
-    slug,
+  const data = await send<{ cycle: ApiRow }>("POST", "/v1/cycles", {
     title: input.title,
-    vision: input.vision ?? "",
-    startDate: toDateString(start),
-    endDate: toDateString(end),
-    status: input.status ?? "planned"
+    start_date: input.startDate,
+    vision: input.vision,
+    status: input.status,
+    slug: input.slug
   });
-  const weeks = Array.from({ length: 12 }).map((_, i) => ({
-    cycle: cycle.id,
-    weekNumber: i + 1,
-    startDate: toDateString(addDays(start, i * 7)),
-    endDate: toDateString(addDays(start, i * 7 + 6)),
-    label: `Week ${i + 1}`
-  }));
-  // sequential — the PB SDK auto-cancels parallel identical requests on one client
-  for (const week of weeks) {
-    await pb.collection("cycle_weeks").create(week);
-  }
-  if (cycle.status === "active") {
-    await activateCycleById(cycle.id);
-  }
-  return toCycle(cycle);
-}
-
-export async function listCycles(): Promise<Cycle[]> {
-  const records = await pb.collection("cycles").getFullList({ sort: "-startDate" });
-  return records.map(toCycle);
-}
-
-export async function getActiveCycle(): Promise<Cycle | null> {
-  const activeId = await getSetting(SETTINGS_KEY_ACTIVE_CYCLE);
-  if (activeId) {
-    const cycle = await pb.collection("cycles").getOne(activeId).catch(rethrowConnectionError);
-    if (cycle) return toCycle(cycle);
-  }
-  const cycle = await pb
-    .collection("cycles")
-    .getFirstListItem(pb.filter("status = {:status}", { status: "active" }), { sort: "-startDate" })
-    .catch(rethrowConnectionError);
-  return cycle ? toCycle(cycle) : null;
-}
-
-/**
- * Pass-through for collection catches: genuine "not found" (404) stays null,
- * but a dead connection (status 0) is rethrown so callers never mistake an
- * outage for missing data (e.g. "No active cycle").
- */
-function rethrowConnectionError(err: unknown): null {
-  if ((err as { status?: number })?.status === 0) throw err;
-  return null;
-}
-
-export async function activateCycleBySlug(slug: string): Promise<Cycle> {
-  const cycle = await pb.collection("cycles").getFirstListItem(pb.filter("slug = {:s}", { s: slug }));
-  await activateCycleById(cycle.id);
-  return toCycle(cycle);
+  return mapCycle(data.cycle);
 }
 
 export async function activateCycleById(cycleId: string): Promise<void> {
-  const active = await pb
-    .collection("cycles")
-    .getFullList({ filter: pb.filter("status = {:s}", { s: "active" }) });
-  for (const record of active) {
-    if (record.id !== cycleId) {
-      await pb.collection("cycles").update(record.id, { status: "planned" });
-    }
-  }
-  await pb.collection("cycles").update(cycleId, { status: "active" });
-  await setSetting(SETTINGS_KEY_ACTIVE_CYCLE, cycleId);
+  await send("POST", `/v1/cycles/${cycleId}/activate`);
 }
 
-export async function getCycleById(cycleId: string): Promise<Cycle | null> {
-  const cycle = await pb.collection("cycles").getOne(cycleId).catch(() => null);
-  return cycle ? toCycle(cycle) : null;
+export async function activateCycleBySlug(slug: string): Promise<Cycle> {
+  const cycles = await listCycles();
+  const cycle = cycles.find((entry) => entry.slug === slug);
+  if (!cycle) throw new Error(`Cycle not found: ${slug}`);
+  await activateCycleById(cycle.id);
+  return cycle;
+}
+
+export async function updateCycle(input: {
+  id: string;
+  title?: string;
+  vision?: string | null;
+  startDate?: string;
+}): Promise<Cycle> {
+  const data = await send<{ cycle: ApiRow }>("PUT", `/v1/cycles/${input.id}`, {
+    title: input.title,
+    vision: input.vision,
+    start_date: input.startDate
+  });
+  return mapCycle(data.cycle);
 }
 
 export async function getCycleWeeks(cycleId: string): Promise<CycleWeek[]> {
-  const records = await pb.collection("cycle_weeks").getFullList({
-    filter: pb.filter("cycle = {:cycle}", { cycle: cycleId }),
-    sort: "weekNumber"
-  });
-  return records.map((record) => ({
-    id: String(record.id),
-    cycleId: String(record.cycle),
-    weekNumber: Number(record.weekNumber),
-    startDate: String(record.startDate),
-    endDate: String(record.endDate),
-    label: String(record.label)
-  }));
+  const data = await get<{ cycle_weeks: ApiRow[]; total: number }>(
+    `/v1/cycle-weeks?cycle_id=${encodeURIComponent(cycleId)}&limit=100`
+  );
+  return data.cycle_weeks.map(mapWeek);
 }
 
-export async function getCurrentWeekNumber(cycleId: string, date: string = todayDateString()): Promise<number | null> {
-  const week = await pb
-    .collection("cycle_weeks")
-    .getFirstListItem(
-      pb.filter("cycle = {:cycle} && startDate <= {:d} && endDate >= {:d}", { cycle: cycleId, d: date })
-    )
-    .catch(() => null);
-  return week ? Number(week.weekNumber) : null;
+export async function getCurrentWeekNumber(cycleId: string, date: string): Promise<number | null> {
+  const weeks = await getCycleWeeks(cycleId);
+  const week = weeks.find((entry) => entry.startDate <= date && entry.endDate >= date);
+  return week ? week.weekNumber : null;
 }
 
-export type Goal = {
-  id: string;
-  cycleId: string;
-  title: string;
-  description: string | null;
-  sortOrder: number;
-  status: string;
-};
-
-function toGoal(record: Record<string, unknown>): Goal {
-  return {
-    id: String(record.id),
-    cycleId: String(record.cycle),
-    title: String(record.title),
-    description: (record.description as string) || null,
-    sortOrder: Number(record.sortOrder),
-    status: String(record.status)
-  };
-}
-
-export async function addGoal(cycleId: string, title: string, description?: string): Promise<Goal> {
-  const existing = await pb.collection("goals").getFullList({
-    filter: pb.filter("cycle = {:c}", { c: cycleId })
-  });
-  if (existing.length >= 3) {
-    throw new Error("A cycle may have at most 3 goals");
-  }
-  const created = await pb.collection("goals").create({
-    cycle: cycleId,
-    title,
-    description: description ?? "",
-    sortOrder: existing.length,
-    status: "in_progress"
-  });
-  return toGoal(created);
-}
+// ---------------------------------------------------------------- goals & tactics
 
 export async function listGoals(cycleId: string): Promise<Goal[]> {
-  const records = await pb.collection("goals").getFullList({
-    filter: pb.filter("cycle = {:c}", { c: cycleId }),
-    sort: "sortOrder,id"
-  });
-  return records.map(toGoal);
-}
-
-export async function updateGoalStatus(goalId: string, status: string): Promise<Goal> {
-  const updated = await pb.collection("goals").update(goalId, { status });
-  return toGoal(updated);
-}
-
-export type LagIndicator = {
-  id: string;
-  goalId: string;
-  title: string;
-  type: string;
-  targetValue: number | null;
-  currentValue: number | null;
-  unit: string | null;
-  achieved: boolean;
-  sortOrder: number;
-};
-
-function toLag(record: Record<string, unknown>): LagIndicator {
-  return {
-    id: String(record.id),
-    goalId: String(record.goal),
-    title: String(record.title),
-    type: String(record.type),
-    targetValue: record.targetValue === "" || record.targetValue === null ? null : Number(record.targetValue),
-    currentValue: record.currentValue === "" || record.currentValue === null ? null : Number(record.currentValue),
-    unit: (record.unit as string) || null,
-    achieved: Boolean(record.achieved),
-    sortOrder: Number(record.sortOrder)
-  };
-}
-
-export async function addLag(input: {
-  goalId: string;
-  title: string;
-  type: string;
-  targetValue?: number;
-  unit?: string;
-}): Promise<LagIndicator> {
-  const existing = await pb.collection("lag_indicators").getFullList({
-    filter: pb.filter("goal = {:g}", { g: input.goalId })
-  });
-  const created = await pb.collection("lag_indicators").create({
-    goal: input.goalId,
-    title: input.title,
-    type: input.type,
-    targetValue: input.targetValue ?? "",
-    currentValue: "",
-    unit: input.unit ?? "",
-    achieved: false,
-    sortOrder: existing.length
-  });
-  return toLag(created);
-}
-
-export async function listLags(goalId: string): Promise<LagIndicator[]> {
-  const records = await pb.collection("lag_indicators").getFullList({
-    filter: pb.filter("goal = {:g}", { g: goalId }),
-    sort: "sortOrder"
-  });
-  return records.map(toLag);
-}
-
-export async function updateLag(lagId: string, currentValue: number): Promise<LagIndicator> {
-  const current = await pb.collection("lag_indicators").getOne(lagId);
-  const achieved =
-    current.type === "boolean"
-      ? currentValue >= 1
-      : current.targetValue !== "" && current.targetValue !== null
-        ? currentValue >= Number(current.targetValue)
-        : false;
-  const updated = await pb.collection("lag_indicators").update(lagId, { currentValue, achieved });
-  return toLag(updated);
-}
-
-export async function markLagDone(lagId: string): Promise<LagIndicator> {
-  const updated = await pb.collection("lag_indicators").update(lagId, { achieved: true, currentValue: 1 });
-  return toLag(updated);
-}
-
-// ---------------------------------------------------------------- utils
-
-export function nowIso() {
-  return new Date().toISOString();
-}
-
-export function todayDateString() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-export function slugify(value: string) {
-  return value
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-export function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
-
-export function parseDate(value: string) {
-  return new Date(`${value}T00:00:00.000Z`);
-}
-
-export function formatPercent(value: number) {
-  return `${Math.round(value * 100)}%`;
-}
-
-const AMOUNT_SCALE = 1_000_000;
-
-/** Keep persisted/displayed tactic quantities stable across decimal arithmetic. */
-export function normalizeAmount(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.round(value * AMOUNT_SCALE) / AMOUNT_SCALE;
-}
-
-export function amountsEqual(left: number, right: number): boolean {
-  return Math.abs(normalizeAmount(left) - normalizeAmount(right)) < 1 / AMOUNT_SCALE;
-}
-
-export function formatAmount(n: number): string {
-  return String(normalizeAmount(n));
-}
-
-export function getTacticStepDelta(input: {
-  direction: "increase" | "decrease";
-  todayActual: number;
-  todayTarget: number;
-}): number {
-  const actual = Math.max(normalizeAmount(input.todayActual), 0);
-  const target = Math.max(normalizeAmount(input.todayTarget), 0);
-  if (input.direction === "increase") {
-    const remaining = normalizeAmount(target - actual);
-    return remaining > 0 ? Math.min(1, remaining) : 0;
-  }
-  return actual > 0 ? -Math.min(1, actual) : 0;
-}
-
-export function startOfIsoWeek(date: Date) {
-  const copy = new Date(date);
-  const day = copy.getUTCDay() || 7;
-  copy.setUTCDate(copy.getUTCDate() - day + 1);
-  copy.setUTCHours(0, 0, 0, 0);
-  return copy;
-}
-
-export function addDays(date: Date, days: number) {
-  const copy = new Date(date);
-  copy.setUTCDate(copy.getUTCDate() + days);
-  return copy;
-}
-
-export function toDateString(date: Date) {
-  return date.toISOString().slice(0, 10);
-}
-
-export function statusFromScore(score: number): TrackStatus {
-  if (score >= 0.85) return "on_track";
-  if (score >= 0.7) return "warning";
-  return "off_track";
-}
-
-// ---------------------------------------------------------------- tactic types
-
-export type TrackStatus = "on_track" | "warning" | "off_track" | "coming";
-
-export type TrackingType = "boolean" | "quantity" | "duration";
-export type RecurrenceType = "daily" | "weekdays" | "times_per_week" | "once";
-
-export type ExecutionStyle = "toggle" | "occurrence" | "volume";
-
-function isExecutionStyle(value: unknown): value is ExecutionStyle {
-  return value === "toggle" || value === "occurrence" || value === "volume";
-}
-
-/** Derived style when no (valid) explicit executionStyle is stored — resolved lazily, never backfilled. */
-function deriveExecutionStyle(plan: TacticPlan): ExecutionStyle {
-  if (plan.trackingType === "boolean") {
-    return plan.recurrenceType === "daily" || plan.recurrenceType === "weekdays" ? "toggle" : "occurrence";
-  }
-  return "volume";
-}
-
-function isStyleValidForTracking(style: ExecutionStyle, trackingType: string, plan: TacticPlan): boolean {
-  switch (style) {
-    case "toggle":
-      return trackingType === "boolean";
-    case "occurrence":
-      // boolean always; quantity only for whole-count ("quantity-integer") targets
-      return trackingType === "boolean" || (trackingType === "quantity" && Number.isInteger(plan.targetValue));
-    case "volume":
-      return trackingType === "quantity" || trackingType === "duration";
-  }
-}
-
-/**
- * Explicit tactic.executionStyle wins IF valid for the trackingType
- * (toggle⇔boolean, occurrence⇔boolean|quantity-integer, volume⇔quantity|duration).
- * Contradiction → throw with { strict: true } (write paths), ignore + derive otherwise (read paths).
- */
-export function resolveExecutionStyle(
-  plan: TacticPlan,
-  tactic?: { executionStyle?: string | null; trackingType?: string } | null,
-  opts?: { strict?: boolean }
-): ExecutionStyle {
-  const raw = tactic?.executionStyle;
-  if (isExecutionStyle(raw)) {
-    const trackingType = tactic?.trackingType ?? plan.trackingType;
-    if (isStyleValidForTracking(raw, trackingType, plan)) return raw;
-    if (opts?.strict) {
-      throw new Error(`executionStyle "${raw}" contradicts trackingType "${trackingType}"`);
-    }
-    return deriveExecutionStyle(plan);
-  }
-  return deriveExecutionStyle(plan);
-}
-
-export type TacticPlan = {
-  trackingType: TrackingType;
-  recurrenceType: RecurrenceType;
-  recurrenceCount: number;
-  targetValue: number;
-  unit: string;
-};
-
-export type TacticEntryValue = {
-  tacticId: string;
-  date: string | null;
-  value: number;
-  completed: boolean;
-};
-
-export type TacticWeekScore = {
-  tacticId: string;
-  tacticTitle: string;
-  goalId: string;
-  goalTitle: string;
-  planned: number;
-  fullWeekPlanned: number;
-  actual: number;
-  score: number;
-  weight: number;
-  status: TrackStatus;
-  unit: string;
-  /** Blocks scheduled in the scored week (0 when none / snapshot paths). */
-  scheduled?: number;
-  trackingType: string;
-  recurrenceType: string;
-  recurrenceCount: number;
-  targetValue: number;
-  executionStyle: ExecutionStyle;
-};
-
-type LegacyTacticLike = {
-  startsWeek: number | null;
-  endsWeek: number | null;
-  active: boolean;
-  type: string;
-  trackingType: string;
-  recurrenceType: string;
-  recurrenceCount: number;
-  targetValue: number;
-  targetPerWeek: number | null;
-  targetPerDay: number | null;
-  unit: string;
-  executionStyle?: string | null;
-};
-
-export function resolveTacticPlan(tactic: LegacyTacticLike, opts?: { strict?: boolean }): TacticPlan {
-  if (tactic.trackingType && tactic.recurrenceType) {
-    if (opts?.strict) {
-      if (tactic.trackingType !== "boolean" && tactic.trackingType !== "quantity" && tactic.trackingType !== "duration") {
-        throw new Error(`Unknown trackingType: ${tactic.trackingType}`);
-      }
-      if (tactic.recurrenceType !== "daily" && tactic.recurrenceType !== "weekdays" && tactic.recurrenceType !== "times_per_week" && tactic.recurrenceType !== "once") {
-        throw new Error(`Unknown recurrenceType: ${tactic.recurrenceType}`);
-      }
-    }
-    return {
-      trackingType: tactic.trackingType as TrackingType,
-      recurrenceType: tactic.recurrenceType as RecurrenceType,
-      recurrenceCount: Math.max(1, Number(tactic.recurrenceCount ?? 1)),
-      targetValue: Number(tactic.targetValue ?? 1),
-      unit: String(tactic.unit)
-    };
-  }
-  switch (tactic.type) {
-    case "weekly_hours":
-      return { trackingType: "duration", recurrenceType: "times_per_week", recurrenceCount: 1, targetValue: Number(tactic.targetPerWeek ?? 0), unit: tactic.unit };
-    case "weekly_count":
-      return { trackingType: "quantity", recurrenceType: "times_per_week", recurrenceCount: 1, targetValue: Number(tactic.targetPerWeek ?? 0), unit: tactic.unit };
-    case "daily_checkbox":
-      return { trackingType: "boolean", recurrenceType: "daily", recurrenceCount: 1, targetValue: Number(tactic.targetPerDay ?? 1), unit: tactic.unit };
-    case "one_time":
-      return { trackingType: "boolean", recurrenceType: "once", recurrenceCount: 1, targetValue: 1, unit: tactic.unit };
-    case "habit":
-      return Number(tactic.targetPerWeek ?? 0) >= 7
-        ? { trackingType: "boolean", recurrenceType: "daily", recurrenceCount: 1, targetValue: 1, unit: tactic.unit }
-        : { trackingType: "boolean", recurrenceType: "times_per_week", recurrenceCount: Math.max(1, Number(tactic.targetPerWeek ?? 1)), targetValue: 1, unit: tactic.unit };
-    default:
-      // Silent default: snapshot reads must stay parseable (v1, no v2 yet).
-      // Write paths call resolveTacticPlan(tactic, { strict: true }) and throw here instead.
-      if (opts?.strict) throw new Error(`Unknown tactic type: ${tactic.type}`);
-      return { trackingType: "boolean", recurrenceType: "times_per_week", recurrenceCount: 1, targetValue: 1, unit: tactic.unit };
-  }
-}
-
-export function getOccurrenceTarget(plan: TacticPlan) {
-  return Number(plan.targetValue);
-}
-
-export function getPlannedWeeklyTarget(plan: TacticPlan) {
-  switch (plan.recurrenceType) {
-    case "daily":
-      return plan.targetValue * 7;
-    case "weekdays":
-      return plan.targetValue * 5;
-    case "times_per_week":
-      return plan.targetValue * plan.recurrenceCount;
-    case "once":
-      return plan.targetValue;
-  }
-}
-
-export function getSchedulingProgress(
-  plan: TacticPlan,
-  blocks: Array<{ plannedValue: number }>,
-  weeklyTargetOverride?: number
-) {
-  const weekTarget = normalizeAmount(
-    weeklyTargetOverride === undefined ? getPlannedWeeklyTarget(plan) : weeklyTargetOverride
+  const data = await get<{ goals: ApiRow[]; total: number }>(
+    `/v1/goals?cycle_id=${encodeURIComponent(cycleId)}&limit=100`
   );
-  const scheduled = normalizeAmount(
-    blocks.reduce((sum, block) => {
-      const value = Number(block.plannedValue);
-      return Number.isFinite(value) && value > 0 ? sum + value : sum;
-    }, 0)
-  );
-  return {
-    weekTarget,
-    scheduled,
-    remaining: normalizeAmount(Math.max(weekTarget - scheduled, 0))
-  };
+  return data.goals.map(mapGoal);
 }
 
-export function resolveCalendarBlockValue(
-  plan: TacticPlan,
-  blocks: Array<{ plannedValue: number }>,
-  requestedValue: number,
-  executionStyle: ExecutionStyle = deriveExecutionStyle(plan),
-  weeklyTargetOverride?: number
-) {
-  const rawValue = Number(requestedValue);
-  const value = normalizeAmount(rawValue);
-  if (!Number.isFinite(rawValue) || value <= 0) {
-    throw new Error("Block size must be greater than 0");
-  }
-  if (executionStyle === "toggle") {
-    throw new Error("Toggles can't be scheduled");
-  }
-  if (executionStyle === "occurrence" && !Number.isInteger(value)) {
-    throw new Error("Occurrence block size must be a whole number");
-  }
-  const { remaining } = getSchedulingProgress(plan, blocks, weeklyTargetOverride);
-  if (value > remaining && !amountsEqual(value, remaining)) {
-    throw new Error(`Only ${formatAmount(remaining)} ${plan.unit || "units"} remain to schedule this week`);
-  }
-  return value;
-}
-
-export function isTacticActiveInWeek(
-  tactic: Pick<LegacyTacticLike, "startsWeek" | "endsWeek" | "active">,
-  weekNumber: number,
-  schedule?: { required: boolean } | null
-) {
-  if (schedule) return schedule.required;
-  return (
-    tactic.active &&
-    (tactic.startsWeek === null || tactic.startsWeek <= weekNumber) &&
-    (tactic.endsWeek === null || tactic.endsWeek >= weekNumber)
-  );
-}
-
-export function isWeekdayDate(date: string) {
-  const weekday = parseDate(date).getUTCDay();
-  return weekday >= 1 && weekday <= 5;
-}
-
-export function isDueToday(plan: TacticPlan, date: string, weeklyRemaining: number, todayProgress: number, activeInWeek: boolean) {
-  if (!activeInWeek) return false;
-  switch (plan.recurrenceType) {
-    case "daily":
-      return todayProgress < plan.targetValue;
-    case "weekdays":
-      return isWeekdayDate(date) && todayProgress < plan.targetValue;
-    case "times_per_week":
-      return plan.trackingType === "boolean" ? weeklyRemaining > 0 && todayProgress < plan.targetValue : weeklyRemaining > 0;
-    case "once":
-      return weeklyRemaining > 0 && todayProgress < plan.targetValue;
-  }
-}
-
-export function getActualProgress(
-  plan: TacticPlan,
-  entries: TacticEntryValue[],
-  style: ExecutionStyle = deriveExecutionStyle(plan)
-) {
-  if (style === "toggle") {
-    // One done-day counts once: a double-complete on the same date no longer inflates.
-    const doneDates = new Set<string>();
-    let undated = 0;
-    for (const entry of entries) {
-      if (!(entry.completed || entry.value > 0)) continue;
-      if (entry.date) doneDates.add(entry.date);
-      else undated += 1;
-    }
-    return doneDates.size + undated;
-  }
-  if (style === "occurrence" && plan.trackingType === "boolean") {
-    // Whole occurrences; legacy boolean completes (value 0 + completed) still count 1.
-    return Math.max(
-      0,
-      entries.reduce(
-        (sum, entry) => sum + (entry.completed || entry.value > 0 ? Math.max(1, Number(entry.value)) : Number(entry.value)),
-        0
-      )
+export async function listTactics(cycleId: string): Promise<Array<{ tactic: Tactic; goalTitle: string }>> {
+  const goals = await listGoals(cycleId);
+  const goalTitles = new Map(goals.map((goal) => [goal.id, goal.title]));
+  const out: Array<{ tactic: Tactic; goalTitle: string }> = [];
+  for (const goal of goals) {
+    const data = await get<{ tactics: ApiRow[]; total: number }>(
+      `/v1/tactics?goal_id=${encodeURIComponent(goal.id)}&limit=100`
     );
+    for (const row of data.tactics) {
+      out.push({ tactic: mapTactic(row), goalTitle: goalTitles.get(goal.id) ?? "Unknown goal" });
+    }
   }
-  return Math.max(0, entries.reduce((sum, entry) => sum + Number(entry.value), 0));
-}
-
-export function getTodayProgress(
-  plan: TacticPlan,
-  entries: TacticEntryValue[],
-  date: string,
-  style: ExecutionStyle = deriveExecutionStyle(plan)
-) {
-  return getActualProgress(plan, entries.filter((entry) => entry.date === date), style);
-}
-
-// ---------------------------------------------------------------- tactics CRUD
-
-export type Tactic = {
-  id: string;
-  goalId: string;
-  title: string;
-  type: string;
-  trackingType: string;
-  recurrenceType: string;
-  recurrenceCount: number;
-  targetValue: number;
-  unit: string;
-  executionStyle?: string;
-  targetPerWeek: number | null;
-  targetPerDay: number | null;
-  scoringWeight: number;
-  startsWeek: number | null;
-  endsWeek: number | null;
-  active: boolean;
-  sortOrder: number;
-};
-
-function toTactic(record: Record<string, unknown>): Tactic {
-  return {
-    id: String(record.id),
-    goalId: String(record.goal),
-    title: String(record.title),
-    type: String(record.type),
-    trackingType: String(record.trackingType),
-    recurrenceType: String(record.recurrenceType),
-    recurrenceCount: Number(record.recurrenceCount),
-    targetValue: Number(record.targetValue),
-    unit: String(record.unit),
-    // Unvalidated string at the boundary — validated in resolveExecutionStyle.
-    executionStyle: (record.executionStyle as string) || undefined,
-    targetPerWeek: record.targetPerWeek === "" || record.targetPerWeek === null ? null : Number(record.targetPerWeek),
-    targetPerDay: record.targetPerDay === "" || record.targetPerDay === null ? null : Number(record.targetPerDay),
-    scoringWeight: Number(record.scoringWeight),
-    // PB stores null numbers as 0; week numbers are 1-based so 0 means "unset"
-    startsWeek: record.startsWeek === "" || record.startsWeek === null || Number(record.startsWeek) === 0 ? null : Number(record.startsWeek),
-    endsWeek: record.endsWeek === "" || record.endsWeek === null || Number(record.endsWeek) === 0 ? null : Number(record.endsWeek),
-    active: Boolean(record.active),
-    sortOrder: Number(record.sortOrder)
-  };
-}
-
-export type AddTacticInput = {
-  goalId: string;
-  title: string;
-  type?: string;
-  trackingType?: TrackingType;
-  recurrenceType?: RecurrenceType;
-  recurrenceCount?: number;
-  targetValue?: number;
-  unit?: string;
-  target?: number;
-  scoringWeight?: number;
-  week?: number | null;
-  startsWeek?: number | null;
-  endsWeek?: number | null;
-};
-
-function buildLegacyType(input: { type?: string; trackingType: TrackingType; recurrenceType: RecurrenceType; recurrenceCount: number; targetValue: number }) {
-  if (input.type) return input.type;
-  if (input.recurrenceType === "once") return "one_time";
-  if (input.recurrenceType === "daily" && input.trackingType === "boolean" && input.targetValue === 1) return "daily_checkbox";
-  if (input.recurrenceType === "times_per_week" && input.trackingType === "duration" && input.recurrenceCount === 1) return "weekly_hours";
-  if (input.recurrenceType === "times_per_week" && input.trackingType === "quantity" && input.recurrenceCount === 1) return "weekly_count";
-  if (input.trackingType === "boolean" && input.targetValue === 1) return "habit";
-  return "tracked";
-}
-
-function normalizePlan(input: AddTacticInput) {
-  if (input.trackingType && input.recurrenceType) {
-    return {
-      trackingType: input.trackingType,
-      recurrenceType: input.recurrenceType,
-      recurrenceCount: Math.max(1, input.recurrenceCount ?? 1),
-      targetValue: Number(input.targetValue ?? input.target ?? 1)
-    };
-  }
-  switch (input.type) {
-    case "weekly_hours":
-      return { trackingType: "duration" as const, recurrenceType: "times_per_week" as const, recurrenceCount: 1, targetValue: Number(input.target ?? 0) };
-    case "weekly_count":
-      return { trackingType: "quantity" as const, recurrenceType: "times_per_week" as const, recurrenceCount: 1, targetValue: Number(input.target ?? 0) };
-    case "one_time":
-      return { trackingType: "boolean" as const, recurrenceType: "once" as const, recurrenceCount: 1, targetValue: 1 };
-    case "daily_checkbox":
-      return { trackingType: "boolean" as const, recurrenceType: "daily" as const, recurrenceCount: 1, targetValue: Number(input.target ?? 1) };
-    case "habit":
-      return Number(input.target ?? 0) >= 7
-        ? { trackingType: "boolean" as const, recurrenceType: "daily" as const, recurrenceCount: 1, targetValue: 1 }
-        : { trackingType: "boolean" as const, recurrenceType: "times_per_week" as const, recurrenceCount: Math.max(1, Number(input.target ?? 1)), targetValue: 1 };
-    default:
-      return { trackingType: "boolean" as const, recurrenceType: "times_per_week" as const, recurrenceCount: 1, targetValue: Number(input.target ?? 1) };
-  }
-}
-
-export async function addTactic(input: AddTacticInput): Promise<Tactic> {
-  const goal = await pb.collection("goals").getOne(input.goalId).catch(() => null);
-  if (!goal) throw new Error(`Goal not found: ${input.goalId}`);
-  const existing = await pb.collection("tactics").getFullList({
-    filter: pb.filter("goal = {:g}", { g: input.goalId })
-  });
-  const week = input.week ?? null;
-  const plan = normalizePlan(input);
-  const unit =
-    input.unit ??
-    (plan.trackingType === "duration" ? "hours" : plan.trackingType === "quantity" ? "count" : "done");
-  const created = await pb.collection("tactics").create({
-    goal: input.goalId,
-    title: input.title,
-    type: buildLegacyType({ type: input.type, ...plan }),
-    trackingType: plan.trackingType,
-    recurrenceType: plan.recurrenceType,
-    recurrenceCount: plan.recurrenceCount,
-    targetValue: plan.targetValue,
-    unit,
-    targetPerWeek: plan.recurrenceType === "once" ? "" : input.target ?? getPlannedWeeklyTarget({ ...plan, unit }),
-    targetPerDay: plan.recurrenceType === "daily" ? plan.targetValue : "",
-    scoringWeight: input.scoringWeight ?? 1,
-    startsWeek: week ?? input.startsWeek ?? "",
-    endsWeek: week ?? input.endsWeek ?? "",
-    active: true,
-    sortOrder: existing.length
-  });
-  const tactic = toTactic(created);
-  if (plan.recurrenceType === "once" && week) {
-    await pb.collection("tactic_schedules").create({
-      tactic: tactic.id,
-      weekNumber: week,
-      plannedTarget: plan.targetValue,
-      required: true
-    });
-  }
-  return tactic;
-}
-
-export async function listTactics(cycleId?: string): Promise<Array<{ tactic: Tactic; goalTitle: string }>> {
-  const filter = cycleId ? pb.filter("goal.cycle = {:c}", { c: cycleId }) : "";
-  const records = await pb.collection("tactics").getFullList({
-    filter,
-    sort: "sortOrder,id",
-    expand: "goal"
-  });
-  // order by goal.sortOrder first (client-side: PB cannot sort by multi-level reliably here)
-  return records
-    .map((record) => {
-      const goal = record.expand?.goal as Record<string, unknown> | undefined;
-      return {
-        tactic: toTactic(record),
-        goalTitle: String(goal?.title ?? "Unknown goal"),
-        goalSortOrder: Number(goal?.sortOrder ?? 0)
-      };
-    })
-    .sort((left, right) =>
-      left.goalSortOrder - right.goalSortOrder ||
-      left.tactic.sortOrder - right.tactic.sortOrder ||
-      left.tactic.id.localeCompare(right.tactic.id)
-    )
-    .map(({ goalSortOrder: _goalSortOrder, ...row }) => row);
+  return out;
 }
 
 export async function getTactic(tacticId: string): Promise<Tactic | null> {
-  const tactic = await pb.collection("tactics").getOne(tacticId).catch(() => null);
-  return tactic ? toTactic(tactic) : null;
+  try {
+    const data = await get<{ tactic: ApiRow }>(`/v1/tactics/${tacticId}`);
+    return mapTactic(data.tactic);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
 }
 
-/** Pure entry-value guard matrix (used by addTacticEntry, unit-tested directly). */
-export function resolveTacticEntryValue(plan: TacticPlan, style: ExecutionStyle, value?: number): number {
-  if (style === "occurrence") {
-    const effective = value ?? 1;
-    if (!Number.isInteger(effective) || effective <= 0) {
-      throw new Error(`occurrence tactics need a positive whole value (got ${String(value)})`);
-    }
-    return effective;
+export async function getTacticTodayState(
+  tacticId: string,
+  date: string = todayDateString()
+): Promise<TacticTodayState | null> {
+  try {
+    const data = await get<{
+      tactic: ApiRow;
+      execution_style: string;
+      today_actual: number;
+      today_target: number | null;
+    }>(`/v1/tactics/${tacticId}/today-state?date=${encodeURIComponent(date)}`);
+    return {
+      tactic: mapTactic(data.tactic),
+      executionStyle: data.execution_style,
+      todayActual: data.today_actual,
+      todayTarget: data.today_target
+    };
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
   }
-  if (plan.trackingType === "quantity") return value ?? 1;
-  if (plan.trackingType === "duration") {
-    if (value === undefined || value === null) throw new Error("duration tactics need a value (minutes)");
-    return value;
-  }
-  return value ?? 1;
 }
+
+// ---------------------------------------------------------------- entries
 
 export async function addTacticEntry(input: {
   tacticId: string;
@@ -838,122 +241,241 @@ export async function addTacticEntry(input: {
   date?: string | null;
   note?: string | null;
 }) {
-  const tactic = await getTactic(input.tacticId);
-  if (!tactic) throw new Error(`Tactic not found: ${input.tacticId}`);
-  const goal = await pb.collection("goals").getOne(tactic.goalId);
-  const cycleId = input.cycleId ?? String(goal.cycle);
-  const date = input.date === "today" || !input.date ? todayDateString() : input.date;
-  const weekNumber = input.weekNumber ?? (await getCurrentWeekNumber(cycleId, date));
-  if (!weekNumber) throw new Error("Date is not inside the cycle");
-  const plan = resolveTacticPlan(tactic, { strict: true });
-  const style = resolveExecutionStyle(plan, tactic, { strict: true });
-  const entryValue = resolveTacticEntryValue(plan, style, input.value);
-  const completed = input.completed ?? (plan.trackingType === "boolean" ? entryValue > 0 : false);
-  const created = await pb.collection("tactic_entries").create({
-    tactic: input.tacticId,
-    cycle: cycleId,
-    weekNumber,
-    date: input.date ? date : "",
-    value: entryValue,
-    completed,
-    note: input.note ?? ""
+  const data = await send<{ tactic_entry: ApiRow }>("POST", "/v1/entries/log", {
+    tactic_id: input.tacticId,
+    cycle_id: input.cycleId,
+    week_number: input.weekNumber,
+    value: input.value,
+    completed: input.completed,
+    date: input.date,
+    note: input.note
   });
-  return created;
+  return data.tactic_entry;
 }
 
 export async function completeTactic(tacticId: string, date?: string) {
   return addTacticEntry({ tacticId, completed: true, value: 1, date: date ?? todayDateString() });
 }
 
-export async function maybeLogDailyCheckinTactic(
-  cycleId: string,
-  kind: "morning" | "evening",
-  date: string
-) {
-  const matches = await pb.collection("tactics").getFullList({
-    filter: pb.filter("goal.cycle = {:c} && unit = {:u}", { c: cycleId, u: "checkins" })
+export async function undoLatestTacticEntry(tacticId: string, date: string) {
+  const data = await send<{ undone: string | null }>("POST", "/v1/entries/undo", {
+    tactic_id: tacticId,
+    date
   });
-  const tactic = matches[0];
-  if (!tactic) return null;
-  return addTacticEntry({
-    tacticId: String(tactic.id),
-    cycleId,
-    date,
-    value: 1,
-    completed: true,
-    note: `${kind} check-in`
-  });
+  return data.undone;
 }
 
-export async function getTodayTactics() {
-  const active = await getActiveCycle();
-  if (!active) return [];
-  return listTactics(active.id);
-}
+// ---------------------------------------------------------------- calendar blocks
 
-// ---------------------------------------------------------------- daily logs
-
-export type DailyLog = {
-  id: string;
-  cycleId: string;
+export async function addTacticCalendarBlock(input: {
+  tacticId: string;
+  cycleId?: string;
   date: string;
-  oneThing: string | null;
-  morningDone: boolean;
-  eveningDone: boolean;
-  stressLevel: number | null;
-  agencyScore: number | null;
-  comfortZoneDone: boolean;
-  deepWorkMinutes: number;
-  avoidanceTrigger: string | null;
-  privateVictories: string | null;
-  notes: string | null;
-};
+  startTime?: string | null;
+  endTime?: string | null;
+  durationMinutes?: number | null;
+  plannedValue?: number | null;
+  note?: string | null;
+}) {
+  const data = await send<{ calendar_block: ApiRow }>("POST", "/v1/calendar-blocks", {
+    tactic_id: input.tacticId,
+    cycle_id: input.cycleId,
+    date: input.date,
+    start_time: input.startTime,
+    end_time: input.endTime,
+    duration_minutes: input.durationMinutes,
+    planned_value: input.plannedValue,
+    note: input.note
+  });
+  return mapBlock(data.calendar_block);
+}
 
-function toDailyLog(record: Record<string, unknown>): DailyLog {
+export async function deleteTacticCalendarBlock(blockId: string) {
+  const existing = await getCalendarBlock(blockId);
+  await send("DELETE", `/v1/calendar-blocks/${blockId}`);
+  return existing;
+}
+
+export async function getCalendarBlock(blockId: string) {
+  try {
+    const data = await get<{ calendar_block: ApiRow }>(`/v1/calendar-blocks/${blockId}`);
+    return mapBlock(data.calendar_block);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+export async function moveTacticCalendarBlock(input: {
+  blockId?: string;
+  tacticId?: string;
+  fromDate?: string;
+  toDate: string;
+}) {
+  const data = await send<{
+    action: "moved";
+    source_block_id: string;
+    block: ApiRow;
+  }>("POST", "/v1/calendar-blocks/move", {
+    block_id: input.blockId,
+    tactic_id: input.tacticId,
+    from_date: input.fromDate,
+    to_date: input.toDate
+  });
+  return { action: data.action, sourceBlockId: data.source_block_id, block: mapBlock(data.block) };
+}
+
+export async function listCalendarBlocksForRange(cycleId: string, from: string, to: string) {
+  const data = await get<{
+    blocks: ApiRow[];
+    scheduling: ApiRow[];
+    current_week: number | null;
+  }>(`/v1/cycles/${cycleId}/calendar?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+  return data.blocks.map(mapBlockWithTitles);
+}
+
+export async function listSchedulingState(cycleId: string, weekStartISO: string, weekEndISO: string) {
+  const data = await get<{
+    blocks: ApiRow[];
+    scheduling: ApiRow[];
+    current_week: number | null;
+  }>(`/v1/cycles/${cycleId}/calendar?from=${encodeURIComponent(weekStartISO)}&to=${encodeURIComponent(weekEndISO)}`);
+  return data.scheduling.map((row) => ({
+    id: String(row.id),
+    title: String(row.title),
+    goalTitle: String(row.goal_title),
+    executionStyle: String(row.execution_style),
+    baseWeekTarget: Number(row.base_week_target),
+    weekTargets: (row.week_targets as Record<number, number>) ?? {},
+    weekTarget: Number(row.week_target),
+    scheduled: Number(row.scheduled),
+    remaining: Number(row.remaining),
+    scheduledDates: ((row.scheduled_dates as string[]) ?? []).map(String),
+    trackingType: String(row.tracking_type),
+    unit: String(row.unit)
+  }));
+}
+
+// ---------------------------------------------------------------- scores & dashboard & report
+
+export async function getWeekScore(
+  cycleId: string,
+  weekNumber: number,
+  options?: { asOfDate?: string; includeAsOfDate?: boolean }
+): Promise<WeekScore> {
+  const params = new URLSearchParams({ week: String(weekNumber) });
+  if (options?.asOfDate) params.set("as_of", options.asOfDate);
+  if (options?.includeAsOfDate) params.set("include_as_of", "true");
+  const data = await get<{ score: ApiRow }>(`/v1/cycles/${cycleId}/score?${params}`);
+  return mapScore(data.score);
+}
+
+export async function getOverallScore(
+  cycleId: string,
+  currentWeek: number
+): Promise<{ score: number; status: TrackStatus; weeksScored: number }> {
+  const data = await get<{ score: number; status: TrackStatus; weeks_scored: number }>(
+    `/v1/cycles/${cycleId}/overall?week=${currentWeek}`
+  );
+  return { score: data.score, status: data.status, weeksScored: data.weeks_scored };
+}
+
+export async function getWeekScoresBatch(
+  cycleId: string,
+  weekNumbers: number[]
+): Promise<Map<number, WeekScore>> {
+  if (!weekNumbers.length) return new Map();
+  const data = await get<{ scores: ApiRow[] }>(
+    `/v1/cycles/${cycleId}/weeks/scores?weeks=${weekNumbers.join(",")}`
+  );
+  return new Map(data.scores.map((row) => [Number(row.week_number), mapScore(row)]));
+}
+
+export async function getDashboardData(
+  cycleId?: string,
+  weekNumber?: number,
+  asOfDate?: string
+): Promise<DashboardData | null> {
+  const params = new URLSearchParams();
+  if (cycleId) params.set("cycle_id", cycleId);
+  void weekNumber;
+  if (asOfDate) params.set("as_of", asOfDate);
+  const query = params.toString();
+  const data = await get<{ dashboard: ApiRow | null }>(`/v1/dashboard${query ? `?${query}` : ""}`);
+  if (!data.dashboard) return null;
+  return mapDashboard(data.dashboard);
+}
+
+export async function getWeekReport(cycleId: string, weekNumber: number): Promise<WeekReport> {
+  const data = await get<ApiRow>(`/v1/cycles/${cycleId}/weeks/${weekNumber}/report`);
+  const review = (data.review as ApiRow) ?? null;
+  const score = mapScore(data.score as ApiRow);
   return {
-    id: String(record.id),
-    cycleId: String(record.cycle),
-    date: String(record.date),
-    oneThing: (record.oneThing as string) || null,
-    morningDone: Boolean(record.morningDone),
-    eveningDone: Boolean(record.eveningDone),
-    stressLevel: record.stressLevel === null ? null : Number(record.stressLevel),
-    agencyScore: record.agencyScore === null ? null : Number(record.agencyScore),
-    comfortZoneDone: Boolean(record.comfortZoneDone),
-    deepWorkMinutes: Number(record.deepWorkMinutes ?? 0),
-    avoidanceTrigger: (record.avoidanceTrigger as string) || null,
-    privateVictories: (record.privateVictories as string) || null,
-    notes: (record.notes as string) || null
+    cycle: mapCycle(data.cycle as ApiRow),
+    week: {
+      weekNumber: Number((data.week as ApiRow).week_number),
+      startDate: String((data.week as ApiRow).start_date),
+      endDate: String((data.week as ApiRow).end_date)
+    },
+    score,
+    blocks: ((data.blocks as ApiRow[]) ?? []).map(mapBlockWithTitles),
+    dailyLogs: ((data.daily_logs as ApiRow[]) ?? []).map(mapDailyLog),
+    entries: ((data.entries as ApiRow[]) ?? []).map((row) => ({
+      id: String(row.id),
+      date: row.date ? String(row.date) : null,
+      tacticTitle: String(row.tactic_title),
+      goalTitle: String(row.goal_title),
+      value: Number(row.value),
+      completed: Boolean(Number(row.completed)),
+      note: (row.note as string) || null
+    })),
+    review: review ? mapReview(review) : null,
+    highlights: {
+      completedTactics: score.tacticScores.filter((tactic) => tactic.score >= 1),
+      offTrackTactics: score.tacticScores.filter((tactic) => tactic.status !== "on_track"),
+      carryOverTactics: score.tacticScores.filter(
+        (tactic) => tactic.status !== "on_track" && tactic.recurrenceType === "once"
+      ),
+      recurringGaps: score.tacticScores.filter(
+        (tactic) => tactic.status !== "on_track" && tactic.recurrenceType !== "once"
+      ),
+      bestGoal: [...score.goalScores].sort((a, b) => b.score - a.score)[0] ?? null,
+      weakestGoal: [...score.goalScores].sort((a, b) => a.score - b.score)[0] ?? null
+    }
   };
 }
 
+// ---------------------------------------------------------------- daily logs & check-in
+
 export async function getDailyLog(cycleId: string, date: string): Promise<DailyLog | null> {
-  const log = await pb
-    .collection("daily_logs")
-    .getFirstListItem(pb.filter("cycle = {:c} && date = {:d}", { c: cycleId, d: date }))
-    .catch(() => null);
-  return log ? toDailyLog(log) : null;
+  const data = await get<{ daily_log: ApiRow | null }>(
+    `/v1/daily-logs?cycle_id=${encodeURIComponent(cycleId)}&date=${encodeURIComponent(date)}`
+  );
+  return data.daily_log ? mapDailyLog(data.daily_log) : null;
 }
 
-async function ensureDailyLog(cycleId: string, date: string): Promise<DailyLog> {
-  const existing = await getDailyLog(cycleId, date);
-  if (existing) return existing;
-  const created = await pb.collection("daily_logs").create({ cycle: cycleId, date });
-  return toDailyLog(created);
+export async function listDailyLogs(cycleId: string, from: string, to: string): Promise<DailyLog[]> {
+  const data = await get<{ daily_logs: ApiRow[]; total: number }>(
+    `/v1/daily-logs?cycle_id=${encodeURIComponent(cycleId)}&limit=100&filters=${encodeURIComponent(
+      JSON.stringify([
+        { field: "date", op: "is_not_empty" }
+      ])
+    )}`
+  );
+  return data.daily_logs
+    .map(mapDailyLog)
+    .filter((log) => log.date >= from && log.date <= to)
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 export async function morning(input: { oneThing?: string; stress?: number; date?: string }) {
-  const active = await getActiveCycle();
-  if (!active) throw new Error("No active cycle");
-  const date = input.date ?? todayDateString();
-  const existing = await ensureDailyLog(active.id, date);
-  const updated = await pb.collection("daily_logs").update(existing.id, {
-    oneThing: input.oneThing ?? existing.oneThing ?? "",
-    stressLevel: input.stress ?? existing.stressLevel ?? "",
-    morningDone: true
+  const data = await send<{ daily_log: ApiRow }>("POST", "/v1/daily-logs/checkin", {
+    kind: "morning",
+    date: input.date,
+    one_thing: input.oneThing,
+    stress_level: input.stress
   });
-  await maybeLogDailyCheckinTactic(active.id, "morning", date);
-  return toDailyLog(updated);
+  return mapDailyLog(data.daily_log);
 }
 
 export async function evening(input: {
@@ -966,1930 +488,16 @@ export async function evening(input: {
   comfortZoneDone?: boolean;
   date?: string;
 }) {
-  const active = await getActiveCycle();
-  if (!active) throw new Error("No active cycle");
-  const date = input.date ?? todayDateString();
-  const existing = await ensureDailyLog(active.id, date);
-  const updated = await pb.collection("daily_logs").update(existing.id, {
-    agencyScore: input.agency ?? existing.agencyScore ?? "",
-    stressLevel: input.stress ?? existing.stressLevel ?? "",
-    privateVictories: input.wins ?? existing.privateVictories ?? "",
-    avoidanceTrigger: input.avoidance ?? existing.avoidanceTrigger ?? "",
-    notes: input.notes ?? existing.notes ?? "",
-    deepWorkMinutes: input.deepWorkMinutes ?? existing.deepWorkMinutes ?? 0,
-    comfortZoneDone: input.comfortZoneDone ?? existing.comfortZoneDone,
-    eveningDone: true
-  });
-  await maybeLogDailyCheckinTactic(active.id, "evening", date);
-  return toDailyLog(updated);
-}
-
-// ---------------------------------------------------------------- scoring (port of src/core/scoring.ts)
-
-export type WeekScore = {
-  cycleId: string;
-  weekNumber: number;
-  weeklyScore: number;
-  status: TrackStatus;
-  goalScores: Array<{ goalId: string; goalTitle: string; score: number; status: TrackStatus }>;
-  tacticScores: TacticWeekScore[];
-};
-
-function getElapsedDaysInWeek(weekStartDate: string, asOfDate: string) {
-  const start = parseDate(weekStartDate);
-  const end = parseDate(asOfDate);
-  const diffDays = Math.floor((end.getTime() - start.getTime()) / 86400000) + 1;
-  return Math.max(0, Math.min(diffDays, 7));
-}
-
-function getElapsedWeekdaysInWeek(weekStartDate: string, asOfDate: string) {
-  const elapsedDays = getElapsedDaysInWeek(weekStartDate, asOfDate);
-  let weekdays = 0;
-  for (let offset = 0; offset < elapsedDays; offset += 1) {
-    const date = new Date(parseDate(weekStartDate));
-    date.setUTCDate(date.getUTCDate() + offset);
-    const weekday = date.getUTCDay();
-    if (weekday >= 1 && weekday <= 5) weekdays += 1;
-  }
-  return weekdays;
-}
-
-function getPreviousDate(date: string) {
-  const previous = parseDate(date);
-  previous.setUTCDate(previous.getUTCDate() - 1);
-  return previous.toISOString().slice(0, 10);
-}
-
-function getScoringCutoffDate(
-  weekStartDate: string | null,
-  weekEndDate: string | null,
-  asOfDate: string,
-  options?: { includeAsOfDate?: boolean }
-) {
-  if (!weekStartDate || !weekEndDate) return asOfDate;
-  if (asOfDate < weekStartDate || asOfDate > weekEndDate) return asOfDate;
-  if (options?.includeAsOfDate) return asOfDate;
-  return getPreviousDate(asOfDate);
-}
-
-export function getPlannedTargetForDate(params: {
-  plan: TacticPlan;
-  executionStyle?: ExecutionStyle;
-  fullWeekPlanned: number;
-  blocks: Array<{ date: string; plannedValue: number }>;
-  weekStartDate: string | null;
-  weekEndDate: string | null;
-  scoringCutoffDate: string;
-}) {
-  const { plan, executionStyle, fullWeekPlanned, blocks, weekStartDate, weekEndDate, scoringCutoffDate } = params;
-  if (blocks.length > 0) {
-    return blocks
-      .filter((block) => !weekStartDate || !weekEndDate || (block.date >= weekStartDate && block.date <= weekEndDate))
-      .filter((block) =>
-        weekStartDate && weekEndDate && scoringCutoffDate >= weekStartDate && scoringCutoffDate <= weekEndDate
-          ? block.date <= scoringCutoffDate
-          : true
-      )
-      .reduce((sum, block) => sum + Number(block.plannedValue), 0);
-  }
-
-  if (!weekStartDate || !weekEndDate || scoringCutoffDate < weekStartDate || scoringCutoffDate > weekEndDate) {
-    return fullWeekPlanned;
-  }
-
-  const elapsedDays = getElapsedDaysInWeek(weekStartDate, scoringCutoffDate);
-  const style = executionStyle ?? deriveExecutionStyle(plan);
-  if (style === "toggle") {
-    switch (plan.recurrenceType) {
-      case "daily":
-        return plan.targetValue * elapsedDays;
-      case "weekdays":
-        return plan.targetValue * getElapsedWeekdaysInWeek(weekStartDate, scoringCutoffDate);
-      default:
-        return fullWeekPlanned;
-    }
-  }
-  if (style === "occurrence") {
-    // Floor pace for flexible weekly pools (no prorata fractions).
-    switch (plan.recurrenceType) {
-      case "times_per_week":
-        return Math.floor(fullWeekPlanned * (elapsedDays / 7));
-      case "once":
-        return fullWeekPlanned;
-      default:
-        return fullWeekPlanned;
-    }
-  }
-  // Volume keeps the exact prorata pace.
-  switch (plan.recurrenceType) {
-    case "daily":
-      return plan.targetValue * elapsedDays;
-    case "weekdays":
-      return plan.targetValue * getElapsedWeekdaysInWeek(weekStartDate, scoringCutoffDate);
-    case "times_per_week":
-      return fullWeekPlanned * (elapsedDays / 7);
-    case "once":
-      return fullWeekPlanned;
-  }
-}
-
-export async function getWeekScore(cycleId: string, weekNumber: number, options?: { asOfDate?: string; includeAsOfDate?: boolean; snapshotRow?: Awaited<ReturnType<typeof getWeekSnapshot>> }) {
-  const asOfDate = options?.asOfDate ?? todayDateString();
-  const snapshotRow = options?.snapshotRow ?? (await getWeekSnapshot(cycleId, weekNumber));
-  const snapshot = snapshotRow?.snapshot;
-  const weekRow =
-    snapshot?.week ??
-    (await pb
-      .collection("cycle_weeks")
-      .getFirstListItem(pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycleId, w: weekNumber }))
-      .catch(() => null));
-  const tacticRows = snapshot
-    ? snapshot.tactics.map((tactic) => ({
-        tactic: { ...tactic, goalId: String(tactic.goalId) } as Tactic,
-        goalTitle: snapshot.goals.find((goal) => String(goal.id) === String(tactic.goalId))?.title ?? "Unknown goal"
-      }))
-    : await listTactics(cycleId);
-  const scheduleRows = snapshot?.tacticSchedules ?? (await pb.collection("tactic_schedules").getFullList());
-  const calendarBlocks = snapshot?.tacticCalendarBlocks
-    ? snapshot.tacticCalendarBlocks.map((block) => ({
-        tacticId: String(block.tacticId),
-        date: block.date,
-        plannedValue: Number(block.plannedValue)
-      }))
-    : (
-        await pb.collection("tactic_calendar_blocks").getFullList({
-          filter: pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycleId, w: weekNumber })
-        })
-      ).map((block) => ({
-        tacticId: String(block.tactic),
-        date: String(block.date),
-        plannedValue: Number(block.plannedValue) || 1
-      }));
-  const weekStartDate = weekRow?.startDate ?? snapshot?.week?.startDate ?? null;
-  const weekEndDate = weekRow?.endDate ?? snapshot?.week?.endDate ?? null;
-  const scoringCutoffDate = getScoringCutoffDate(weekStartDate, weekEndDate, asOfDate, { includeAsOfDate: options?.includeAsOfDate });
-  const entryRecords = await pb.collection("tactic_entries").getFullList({
-    filter: pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycleId, w: weekNumber })
-  });
-  const entries = entryRecordsToValues(entryRecords);
-  const scores = scoreTacticsForWeek({
-    weekNumber,
-    asOfDate,
-    includeAsOfDate: options?.includeAsOfDate,
-    tacticRows,
-    scheduleRows,
-    calendarBlocks,
-    entries,
-    weekStartDate,
-    weekEndDate,
-    hasSnapshot: Boolean(snapshot)
-  });
-
-  const weeklyScore = scores.length > 0 ? scores.reduce((sum, score) => sum + score.score, 0) / scores.length : 0;
-  const goalScores = goalScoresFromTacticScores(scores);
-
-  return {
-    cycleId,
-    weekNumber,
-    weeklyScore,
-    status: statusFromScore(weeklyScore),
-    goalScores,
-    tacticScores: scores
-  } satisfies WeekScore;
-}
-
-/** Pace status for occurrence pools: actual vs floor(N * elapsed/7). Nothing due yet → on_track. */
-function occurrencePaceStatus(weekTarget: number, actual: number, weekStartDate: string | null, scoringCutoffDate: string): TrackStatus {
-  if (!weekStartDate) return statusFromScore(weekTarget > 0 ? Math.min(actual / weekTarget, 1) : actual > 0 ? 1 : 0);
-  const paceFloor = Math.floor(weekTarget * (getElapsedDaysInWeek(weekStartDate, scoringCutoffDate) / 7));
-  if (paceFloor <= 0) return "on_track";
-  return statusFromScore(Math.min(actual / paceFloor, 1));
-}
-
-/**
- * Schedule-aware weekly status override (pure, unit-tested).
- * Returns null when the existing pace/score status should stand.
- * Rules: nothing scheduled → null; nothing left → null; scheduled but
- * untouched and every block still in the future → "coming"; otherwise
- * actual vs due-by-now scheduled value. Volume keeps its block-prorated
- * score status (returns null past the coming check).
- */
-export function resolveScheduledStatus(input: {
-  style: ExecutionStyle;
-  fullWeekPlanned: number;
-  planned: number;
-  actual: number;
-  scheduledDates: string[];
-  scheduledBlocks?: Array<{ date: string; plannedValue: number }>;
-  asOfDate: string;
-}): TrackStatus | null {
-  const scheduledBlocks =
-    input.scheduledBlocks ?? input.scheduledDates.map((date) => ({ date, plannedValue: 1 }));
-  if (scheduledBlocks.length === 0) return null;
-  const remaining = input.style === "toggle" ? input.planned - input.actual : input.fullWeekPlanned - input.actual;
-  if (remaining <= 0) return null;
-  const futureCount = scheduledBlocks.filter((block) => block.date > input.asOfDate).length;
-  if (input.actual <= 0 && futureCount === scheduledBlocks.length) return "coming";
-  if (input.style === "volume") return null;
-  const dueBlocks = scheduledBlocks.filter((block) => block.date <= input.asOfDate);
-  const dueByNow =
-    input.style === "occurrence"
-      ? normalizeAmount(
-          dueBlocks.reduce((sum, block) => {
-            const value = Number(block.plannedValue);
-            return sum + (Number.isFinite(value) && value > 0 ? value : 1);
-          }, 0)
-        )
-      : dueBlocks.length;
-  if (input.actual >= dueByNow) return "on_track";
-  return input.actual > 0 ? "warning" : "off_track";
-}
-
-/** Pure reimplementation of getWeekScore's per-tactic reduce over pre-fetched rows. */
-function scoreTacticsForWeek(input: {
-  weekNumber: number;
-  asOfDate: string;
-  includeAsOfDate?: boolean;
-  tacticRows: Array<{ tactic: Tactic; goalTitle: string }>;
-  scheduleRows: Array<{ tacticId?: unknown; weekNumber?: unknown; plannedTarget?: unknown; required?: unknown }>;
-  calendarBlocks: Array<{ tacticId: string; date: string; plannedValue: number }>;
-  entries: TacticEntryValue[];
-  weekStartDate: string | null;
-  weekEndDate: string | null;
-  hasSnapshot: boolean;
-}): TacticWeekScore[] {
-  const { weekNumber, asOfDate, includeAsOfDate, tacticRows, scheduleRows, calendarBlocks, entries, weekStartDate, weekEndDate, hasSnapshot } = input;
-  const scoringCutoffDate = getScoringCutoffDate(weekStartDate, weekEndDate, asOfDate, { includeAsOfDate });
-  return tacticRows.reduce<TacticWeekScore[]>((acc, { tactic, goalTitle }) => {
-    const schedule = scheduleRows.find(
-      (row) => {
-        const tacticIdValue = (row as unknown as { tactic?: unknown }).tactic ?? row.tacticId;
-        return String(tacticIdValue ?? "") === tactic.id && Number(row.weekNumber) === weekNumber;
-      }
-    );
-    const activeInWeek = hasSnapshot
-      ? true
-      : isTacticActiveInWeek(tactic, weekNumber, schedule ? { required: Boolean(schedule.required) } : null);
-    if (!activeInWeek) return acc;
-    // Read path (live rows AND v1 snapshots): silent default, contradictions derive.
-    const plan = resolveTacticPlan(tactic);
-    const style = resolveExecutionStyle(plan, tactic);
-    const fullWeekPlanned = Number(
-      schedule?.plannedTarget ??
-        (plan.recurrenceType === "once"
-          ? tactic.startsWeek === weekNumber || tactic.endsWeek === weekNumber
-            ? plan.targetValue
-            : 0
-          : getPlannedWeeklyTarget(plan))
-    );
-    const planned = Number(
-      getPlannedTargetForDate({
-        plan,
-        executionStyle: style,
-        fullWeekPlanned,
-        blocks: calendarBlocks.filter((block) => block.tacticId === tactic.id),
-        weekStartDate,
-        weekEndDate,
-        scoringCutoffDate
-      })
-    );
-    const scheduledDatesUpfront = calendarBlocks
-      .filter((block) => block.tacticId === tactic.id)
-      .map((block) => block.date);
-    if (planned <= 0 && entries.every((entry) => entry.tacticId !== tactic.id) && scheduledDatesUpfront.length === 0) {
-      return acc;
-    }
-    const tacticEntriesForWeek = entries.filter((entry) => entry.tacticId === tactic.id);
-    const actual = getActualProgress(plan, tacticEntriesForWeek, style);
-    // Toggle: min(doneDueDays/dueDaysElapsed, 1) — actual is already clamped per date.
-    // Occurrence: min(actual/N, 1) with pace status vs floor(N*elapsed/7). Volume: unchanged.
-    const score =
-      style === "occurrence"
-        ? fullWeekPlanned > 0
-          ? Math.min(actual / fullWeekPlanned, 1)
-          : actual > 0
-            ? 1
-            : 0
-        : style === "toggle"
-          ? planned > 0
-            ? Math.min(actual / planned, 1)
-            : actual > 0
-              ? 1
-              : 0
-          : getTacticExecutionScore(plan, planned, actual);
-    const baseStatus =
-      style === "occurrence"
-        ? occurrencePaceStatus(fullWeekPlanned, actual, weekStartDate, scoringCutoffDate)
-        : statusFromScore(score);
-    const scheduledBlocks = calendarBlocks
-      .filter((block) => block.tacticId === tactic.id)
-      .map((block) => ({ date: block.date, plannedValue: Number(block.plannedValue) }))
-      .sort((left, right) => left.date.localeCompare(right.date));
-    const scheduledDates = scheduledBlocks.map((block) => block.date);
-    const tacticStatus =
-      resolveScheduledStatus({
-        style,
-        fullWeekPlanned,
-        planned,
-        actual,
-        scheduledDates,
-        scheduledBlocks,
-        asOfDate
-      }) ?? baseStatus;
-    acc.push({
-      tacticId: tactic.id,
-      tacticTitle: tactic.title,
-      goalId: tactic.goalId,
-      goalTitle,
-      planned,
-      fullWeekPlanned,
-      actual,
-      score,
-      weight: Number(tactic.scoringWeight),
-      status: tacticStatus,
-      scheduled: scheduledDates.length,
-      unit: tactic.unit,
-      trackingType: plan.trackingType,
-      recurrenceType: plan.recurrenceType,
-      recurrenceCount: plan.recurrenceCount,
-      targetValue: plan.targetValue,
-      executionStyle: style
-    });
-    return acc;
-  }, []);
-}
-
-function goalScoresFromTacticScores(scores: TacticWeekScore[]) {
-  return Object.values(
-    scores.reduce<Record<string, { goalId: string; goalTitle: string; total: number; count: number }>>((acc, score) => {
-      acc[score.goalId] ??= { goalId: score.goalId, goalTitle: score.goalTitle, total: 0, count: 0 };
-      acc[score.goalId].total += score.score;
-      acc[score.goalId].count += 1;
-      return acc;
-    }, {})
-  ).map((row) => ({
-    goalId: row.goalId,
-    goalTitle: row.goalTitle,
-    score: row.count > 0 ? row.total / row.count : 0,
-    status: statusFromScore(row.count > 0 ? row.total / row.count : 0)
-  }));
-}
-
-export function getTacticExecutionScore(plan: TacticPlan, planned: number, actual: number) {
-  const safeActual = Math.max(0, actual);
-  if (planned <= 0) return safeActual > 0 ? 1 : 0;
-  if (plan.recurrenceType === "once") return safeActual >= planned ? 1 : 0;
-  if (planned > 1) return Math.min(safeActual / planned, 1);
-  return safeActual >= planned ? 1 : 0;
-}
-
-/**
- * Overall execution score across all weeks of a cycle that have started
- * (past + current). Future weeks are excluded — they have no data yet.
- *
- * Batch variant: scores every started week from four shared fetches
- * (cycle_weeks, tactics, tactic_schedules, tactic_entries) instead of six
- * requests per week — the dashboard went from ~48 sequential round-trips
- * to four.
- */
-export async function getOverallScore(cycleId: string, currentWeek: number): Promise<{ score: number; status: TrackStatus; weeksScored: number }> {
-  const weeks = await getCycleWeeks(cycleId);
-  const started = weeks.filter((week) => week.weekNumber <= currentWeek);
-  if (!started.length) return { score: 0, status: "off_track", weeksScored: 0 };
-
-  const asOfDate = todayDateString();
-  const [tacticRows, scheduleRecords, entryRecords] = (await Promise.all([
-    listTactics(cycleId),
-    pb.collection("tactic_schedules").getFullList(),
-    pb.collection("tactic_entries").getFullList({ filter: pb.filter("cycle = {:c}", { c: cycleId }) })
-  ])) as unknown as [Tactic[], Array<Record<string, unknown>>, Array<Record<string, unknown>>];
-  // regroup entries per weekNumber via the raw records (they carry weekNumber)
-  const entriesPerWeek = new Map<number, TacticEntryValue[]>();
-  for (const record of entryRecords) {
-    const weekNumber = Number(record.weekNumber);
-    if (!Number.isFinite(weekNumber)) continue;
-    const list = entriesPerWeek.get(weekNumber) ?? [];
-    list.push({ tacticId: String(record.tactic), date: record.date ? String(record.date) : null, value: Number(record.value), completed: Boolean(record.completed) });
-    entriesPerWeek.set(weekNumber, list);
-  }
-
-  let total = 0;
-  for (const week of started) {
-    const weekEntries = entriesPerWeek.get(week.weekNumber) ?? [];
-    const scores = scoreTacticsForWeek({
-      weekNumber: week.weekNumber,
-      asOfDate,
-      tacticRows: tacticRows.map((tactic) => ({ tactic, goalTitle: "Overall" })),
-      scheduleRows: scheduleRecords,
-      calendarBlocks: [],
-      entries: weekEntries,
-      weekStartDate: week.startDate,
-      weekEndDate: week.endDate,
-      hasSnapshot: false
-    });
-    total += scores.length > 0 ? scores.reduce((sum, score) => sum + score.score, 0) / scores.length : 0;
-  }
-  const score = total / started.length;
-  return { score, status: statusFromScore(score), weeksScored: started.length };
-}
-
-/**
- * Score every started week of a cycle in one batch: four fetches total
- * (cycle_weeks via getCycleWeeks caller-side, tactics+expand, tactic_schedules,
- * tactic_entries) instead of six requests per week. Returns WeekScore objects
- * identical to getWeekScore's output (minus calendar-block precision — weeks
- * are scored against the full weekly plan, which is the /weeks overview use case).
- */
-export async function getWeekScoresBatch(cycleId: string, weekNumbers: number[]): Promise<Map<number, WeekScore>> {
-  const result = new Map<number, WeekScore>();
-  if (!weekNumbers.length) return result;
-
-  const asOfDate = todayDateString();
-  const [tacticRows, scheduleRecords, entryRecords] = (await Promise.all([
-    listTactics(cycleId),
-    pb.collection("tactic_schedules").getFullList(),
-    pb.collection("tactic_entries").getFullList({ filter: pb.filter("cycle = {:c}", { c: cycleId }) })
-  ])) as unknown as [Array<{ tactic: Tactic; goalTitle: string }>, Array<Record<string, unknown>>, Array<Record<string, unknown>>];
-
-  const entriesPerWeek = new Map<number, TacticEntryValue[]>();
-  for (const record of entryRecords) {
-    const weekNumber = Number(record.weekNumber);
-    if (!Number.isFinite(weekNumber)) continue;
-    const list = entriesPerWeek.get(weekNumber) ?? [];
-    list.push({ tacticId: String(record.tactic), date: record.date ? String(record.date) : null, value: Number(record.value), completed: Boolean(record.completed) });
-    entriesPerWeek.set(weekNumber, list);
-  }
-
-  for (const weekNumber of weekNumbers) {
-    const scores = scoreTacticsForWeek({
-      weekNumber,
-      asOfDate,
-      tacticRows,
-      scheduleRows: scheduleRecords,
-      calendarBlocks: [],
-      entries: entriesPerWeek.get(weekNumber) ?? [],
-      weekStartDate: null,
-      weekEndDate: null,
-      hasSnapshot: false
-    });
-    const weeklyScore = scores.length > 0 ? scores.reduce((sum, score) => sum + score.score, 0) / scores.length : 0;
-    result.set(weekNumber, {
-      cycleId,
-      weekNumber,
-      weeklyScore,
-      status: statusFromScore(weeklyScore),
-      goalScores: goalScoresFromTacticScores(scores),
-      tacticScores: scores
-    });
-  }
-  return result;
-}
-
-function entryRecordsToValues(records: Array<Record<string, unknown>>): TacticEntryValue[] {
-  return records.map((record) => ({
-    tacticId: String(record.tactic),
-    date: record.date ? String(record.date) : null,
-    value: Number(record.value),
-    completed: Boolean(record.completed)
-  }));
-}
-
-// ---------------------------------------------------------------- snapshots
-
-export type WeekSnapshotTactic = {
-  id: string;
-  goalId: string;
-  title: string;
-  type: string;
-  trackingType: string;
-  recurrenceType: string;
-  recurrenceCount: number;
-  targetValue: number;
-  unit: string;
-  executionStyle?: string | null;
-  targetPerWeek: number | null;
-  targetPerDay: number | null;
-  scoringWeight: number;
-  startsWeek: number | null;
-  endsWeek: number | null;
-  active: boolean;
-  sortOrder: number;
-};
-
-export type WeekSnapshotData = {
-  version: 1;
-  cycleId: string;
-  weekNumber: number;
-  week: { startDate: string; endDate: string; label: string } | null;
-  capturedAt: string;
-  goals: Array<{ id: string; title: string; description: string | null; sortOrder: number; status: string }>;
-  lagIndicators: LagIndicator[];
-  tactics: WeekSnapshotTactic[];
-  tacticSchedules: Array<{ tacticId: string; weekNumber: number; plannedTarget: number | null; required: boolean }>;
-  tacticCalendarBlocks: Array<{
-    id: string;
-    tacticId: string;
-    weekNumber: number;
-    date: string;
-    startTime: string | null;
-    endTime: string | null;
-    durationMinutes: number | null;
-    plannedValue: number;
-    note: string | null;
-  }>;
-};
-
-export async function getWeekSnapshot(cycleId: string, weekNumber: number) {
-  const rows = await pb.collection("week_snapshots").getFullList({
-    filter: pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycleId, w: weekNumber }),
-    sort: "-id",
-    perPage: 1
-  });
-  if (!rows[0]) return null;
-  return { ...rows[0], snapshot: JSON.parse(String(rows[0].snapshotJson)) as WeekSnapshotData };
-}
-
-export async function captureWeekSnapshot(cycleId: string, weekNumber: number) {
-  const week = await pb
-    .collection("cycle_weeks")
-    .getFirstListItem(pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycleId, w: weekNumber }))
-    .catch(() => null);
-  const goalRows = await listGoals(cycleId);
-  const lagRows = (await pb.collection("lag_indicators").getFullList({
-    filter: pb.filter("goal.cycle = {:c}", { c: cycleId })
-  })).map(toLag);
-  const tacticRows = await listTactics(cycleId);
-  const scheduleRecords = await pb.collection("tactic_schedules").getFullList({
-    filter: pb.filter("weekNumber = {:w}", { w: weekNumber })
-  });
-  const blockRecords = await pb.collection("tactic_calendar_blocks").getFullList({
-    filter: pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycleId, w: weekNumber })
-  });
-
-  const scheduleRows = scheduleRecords.map((schedule) => ({
-    tacticId: String(schedule.tactic),
-    weekNumber: Number(schedule.weekNumber),
-    plannedTarget: schedule.plannedTarget === "" || schedule.plannedTarget === null ? null : Number(schedule.plannedTarget),
-    required: Boolean(schedule.required)
-  }));
-  const activeTactics = tacticRows
-    .map((row) => row.tactic)
-    .filter((tactic) => isTacticActiveInWeek(tactic, weekNumber, scheduleRows.find((schedule) => schedule.tacticId === tactic.id)));
-  const activeTacticIds = new Set(activeTactics.map((tactic) => tactic.id));
-  const activeGoalIds = new Set(activeTactics.map((tactic) => tactic.goalId));
-  for (const lag of lagRows) activeGoalIds.add(lag.goalId);
-
-  const capturedAt = nowIso();
-  const snapshot: WeekSnapshotData = {
-    version: 1,
-    cycleId,
-    weekNumber,
-    week: week
-      ? { startDate: String(week.startDate), endDate: String(week.endDate), label: String(week.label) }
-      : null,
-    capturedAt,
-    goals: goalRows
-      .filter((goal) => activeGoalIds.has(goal.id))
-      .map((goal) => ({
-        id: goal.id,
-        title: goal.title,
-        description: goal.description,
-        sortOrder: goal.sortOrder,
-        status: goal.status
-      })),
-    lagIndicators: lagRows
-      .filter((lag) => activeGoalIds.has(lag.goalId))
-      .map((lag) => ({
-        id: lag.id,
-        goalId: lag.goalId,
-        title: lag.title,
-        type: lag.type,
-        targetValue: lag.targetValue,
-        currentValue: lag.currentValue,
-        unit: lag.unit,
-        achieved: lag.achieved,
-        sortOrder: lag.sortOrder
-      })),
-    tactics: activeTactics.map((tactic) => ({
-      id: tactic.id,
-      goalId: tactic.goalId,
-      title: tactic.title,
-      type: tactic.type,
-      trackingType: tactic.trackingType,
-      recurrenceType: tactic.recurrenceType,
-      recurrenceCount: tactic.recurrenceCount,
-      targetValue: tactic.targetValue,
-      unit: tactic.unit,
-      executionStyle: tactic.executionStyle ?? null,
-      targetPerWeek: tactic.targetPerWeek,
-      targetPerDay: tactic.targetPerDay,
-      scoringWeight: tactic.scoringWeight,
-      startsWeek: tactic.startsWeek,
-      endsWeek: tactic.endsWeek,
-      active: tactic.active,
-      sortOrder: tactic.sortOrder
-    })),
-    tacticSchedules: scheduleRows.filter((schedule) => activeTacticIds.has(schedule.tacticId)),
-    tacticCalendarBlocks: blockRecords
-      .filter((block) => activeTacticIds.has(String(block.tactic)))
-      .map((block) => ({
-        id: String(block.id),
-        tacticId: String(block.tactic),
-        weekNumber: Number(block.weekNumber),
-        date: String(block.date),
-        startTime: (block.startTime as string) || null,
-        endTime: (block.endTime as string) || null,
-        durationMinutes: block.durationMinutes === "" || block.durationMinutes === null ? null : Number(block.durationMinutes),
-        // plannedValue is required > 0 by validation; legacy/hand-made rows fall back to one slot.
-        plannedValue: Number(block.plannedValue) || 1,
-        note: (block.note as string) || null
-      }))
-  };
-
-  const created = await pb.collection("week_snapshots").create({
-    cycle: cycleId,
-    weekNumber,
-    snapshotJson: JSON.stringify(snapshot),
-    capturedAt
-  });
-  return { ...created, snapshot };
-}
-
-// ---------------------------------------------------------------- calendar blocks
-
-export type CalendarBlock = {
-  id: string;
-  tacticId: string;
-  cycleId: string;
-  weekNumber: number;
-  date: string;
-  startTime: string | null;
-  endTime: string | null;
-  durationMinutes: number | null;
-  plannedValue: number;
-  note: string | null;
-};
-
-function toBlock(record: Record<string, unknown>): CalendarBlock {
-  return {
-    id: String(record.id),
-    tacticId: String(record.tactic),
-    cycleId: String(record.cycle),
-    weekNumber: Number(record.weekNumber),
-    date: String(record.date),
-    startTime: (record.startTime as string) || null,
-    endTime: (record.endTime as string) || null,
-    durationMinutes: record.durationMinutes === "" || record.durationMinutes === null ? null : Number(record.durationMinutes),
-    plannedValue: Number(record.plannedValue),
-    note: (record.note as string) || null
-  };
-}
-
-function validateDate(value: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error("date must use YYYY-MM-DD");
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
-    throw new Error("date must be a valid calendar date");
-  }
-}
-
-function validateTime(value: string | null | undefined, field: string) {
-  if (!value) return;
-  if (!/^\d{2}:\d{2}$/.test(value)) throw new Error(`${field} must use HH:MM`);
-  const [hours, minutes] = value.split(":").map(Number);
-  if (hours > 23 || minutes > 59) throw new Error(`${field} must be a valid time`);
-}
-
-function validateDuration(value: number | null | undefined) {
-  if (value === undefined || value === null) return;
-  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
-    throw new Error("durationMinutes must be a positive whole number");
-  }
-}
-
-function validatePlannedValue(value: number | null | undefined) {
-  if (value === undefined || value === null) return;
-  if (!Number.isFinite(value) || value <= 0) throw new Error("plannedValue must be greater than 0");
-}
-
-function timeToMinutes(value: string) {
-  const [hours, minutes] = value.split(":").map(Number);
-  return hours * 60 + minutes;
-}
-
-function minutesToTime(value: number) {
-  const hours = Math.floor(value / 60);
-  const minutes = value % 60;
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
-}
-
-function deriveBlockTimes(input: { startTime?: string | null; endTime?: string | null; durationMinutes?: number | null }) {
-  let { startTime, endTime, durationMinutes } = input;
-  validateTime(startTime, "startTime");
-  validateTime(endTime, "endTime");
-  validateDuration(durationMinutes);
-
-  if (startTime && endTime) {
-    const duration = timeToMinutes(endTime) - timeToMinutes(startTime);
-    if (duration <= 0) throw new Error("endTime must be after startTime");
-    durationMinutes ??= duration;
-  } else if (startTime && durationMinutes !== undefined && durationMinutes !== null && endTime == null) {
-    const computedEnd = timeToMinutes(startTime) + durationMinutes;
-    if (computedEnd >= 24 * 60) throw new Error("endTime must be before 24:00");
-    endTime = minutesToTime(computedEnd);
-  }
-
-  return { startTime, endTime, durationMinutes };
-}
-
-export type TacticSchedule = {
-  id: string;
-  tacticId: string;
-  weekNumber: number;
-  plannedTarget: number | null;
-  required: boolean;
-};
-
-function toTacticSchedule(record: Record<string, unknown>): TacticSchedule {
-  return {
-    id: String(record.id),
-    tacticId: String(record.tactic),
-    weekNumber: Number(record.weekNumber),
-    plannedTarget:
-      record.plannedTarget === "" || record.plannedTarget === null || record.plannedTarget === undefined
-        ? null
-        : Number(record.plannedTarget),
-    required: Boolean(record.required)
-  };
-}
-
-/** Load only the schedule that controls one tactic in one target week. */
-export async function getTacticScheduleForWeek(
-  tacticId: string,
-  weekNumber: number
-): Promise<TacticSchedule | null> {
-  const record = await pb
-    .collection("tactic_schedules")
-    .getFirstListItem(
-      pb.filter("tactic = {:t} && weekNumber = {:w}", { t: tacticId, w: weekNumber })
-    )
-    .catch(rethrowConnectionError);
-  return record ? toTacticSchedule(record) : null;
-}
-
-export async function addTacticCalendarBlock(input: {
-  tacticId: string;
-  cycleId?: string;
-  date: string;
-  startTime?: string | null;
-  endTime?: string | null;
-  durationMinutes?: number | null;
-  plannedValue?: number | null;
-  note?: string | null;
-}) {
-  const tactic = await getTactic(input.tacticId);
-  if (!tactic) throw new Error(`Tactic not found: ${input.tacticId}`);
-  const goal = await pb.collection("goals").getOne(tactic.goalId);
-  const cycleId = input.cycleId ?? String(goal.cycle);
-  if (cycleId !== String(goal.cycle)) throw new Error(`Tactic ${input.tacticId} does not belong to cycle ${cycleId}`);
-  validateDate(input.date);
-  const weekNumber = await getCurrentWeekNumber(cycleId, input.date);
-  if (!weekNumber) throw new Error("Block date is not inside the cycle");
-
-  const { startTime, endTime, durationMinutes } = deriveBlockTimes(input);
-  const plan = resolveTacticPlan(tactic, { strict: true });
-  const style = resolveExecutionStyle(plan, tactic, { strict: true });
-  const requestedValue = input.plannedValue ?? (plan.trackingType === "boolean" ? getOccurrenceTarget(plan) : null);
-  validatePlannedValue(requestedValue);
-  if (requestedValue === null) throw new Error("plannedValue is required for quantity and duration blocks");
-  const schedule = await getTacticScheduleForWeek(input.tacticId, weekNumber);
-  const existingBlocks = await pb.collection("tactic_calendar_blocks").getFullList({
-    filter: pb.filter("cycle = {:c} && weekNumber = {:w} && tactic = {:t}", {
-      c: cycleId,
-      w: weekNumber,
-      t: input.tacticId
-    })
-  });
-  const plannedValue = resolveCalendarBlockValue(
-    plan,
-    existingBlocks.map((block) => ({ plannedValue: Number(block.plannedValue) })),
-    requestedValue,
-    style,
-    schedule?.plannedTarget ?? undefined
-  );
-
-  const created = await pb.collection("tactic_calendar_blocks").create({
-    tactic: input.tacticId,
-    cycle: cycleId,
-    weekNumber,
+  const data = await send<{ daily_log: ApiRow }>("POST", "/v1/daily-logs/checkin", {
+    kind: "evening",
     date: input.date,
-    startTime: startTime ?? "",
-    endTime: endTime ?? "",
-    durationMinutes: durationMinutes ?? "",
-    plannedValue: Number(plannedValue),
-    note: input.note ?? ""
+    agency_score: input.agency,
+    stress_level: input.stress,
+    private_victories: input.wins,
+    avoidance_trigger: input.avoidance,
+    notes: input.notes,
+    deep_work_minutes: input.deepWorkMinutes,
+    comfort_zone_done: input.comfortZoneDone
   });
-  return toBlock(created);
-}
-
-export async function updateTacticCalendarBlock(blockId: string, input: {
-  date?: string;
-  startTime?: string | null;
-  endTime?: string | null;
-  durationMinutes?: number | null;
-  plannedValue?: number;
-  note?: string | null;
-}) {
-  const existingRecord = await pb.collection("tactic_calendar_blocks").getOne(blockId);
-  const existing = toBlock(existingRecord);
-
-  const date = input.date ?? existing.date;
-  validateDate(date);
-  const weekNumber = input.date ? await getCurrentWeekNumber(existing.cycleId, date) : existing.weekNumber;
-  if (!weekNumber) throw new Error("Block date is not inside the cycle");
-
-  const updateStartTime = input.startTime !== undefined;
-  const updateEndTime = input.endTime !== undefined;
-  const updateDuration = input.durationMinutes !== undefined;
-  const shouldRecomputeDuration = updateStartTime && updateEndTime && !updateDuration;
-  const shouldRecomputeEndTime = updateStartTime && updateDuration && !updateEndTime;
-  const { startTime, endTime, durationMinutes } = deriveBlockTimes({
-    startTime: updateStartTime ? input.startTime : existing.startTime,
-    endTime: shouldRecomputeEndTime ? undefined : updateEndTime ? input.endTime : existing.endTime,
-    durationMinutes: shouldRecomputeDuration ? undefined : updateDuration ? input.durationMinutes : existing.durationMinutes
-  });
-  validatePlannedValue(input.plannedValue);
-  const tactic = await getTactic(existing.tacticId);
-  if (!tactic) throw new Error(`Tactic not found: ${existing.tacticId}`);
-  const plan = resolveTacticPlan(tactic, { strict: true });
-  const style = resolveExecutionStyle(plan, tactic, { strict: true });
-  const schedule = await getTacticScheduleForWeek(existing.tacticId, weekNumber);
-  const destinationRecords = await pb.collection("tactic_calendar_blocks").getFullList({
-    filter: pb.filter("cycle = {:c} && weekNumber = {:w} && tactic = {:t}", {
-      c: existing.cycleId,
-      w: weekNumber,
-      t: existing.tacticId
-    })
-  });
-  const plannedValue = resolveCalendarBlockValue(
-    plan,
-    destinationRecords
-      .filter((record) => String(record.id) !== blockId)
-      .map((record) => ({ plannedValue: Number(record.plannedValue) })),
-    input.plannedValue === undefined ? existing.plannedValue : Number(input.plannedValue),
-    style,
-    schedule?.plannedTarget ?? undefined
-  );
-
-  const updated = await pb.collection("tactic_calendar_blocks").update(blockId, {
-    weekNumber,
-    date,
-    startTime: startTime ?? "",
-    endTime: endTime ?? "",
-    durationMinutes: durationMinutes ?? "",
-    plannedValue,
-    note: input.note === undefined ? existing.note ?? "" : input.note
-  });
-  return toBlock(updated);
-}
-
-export async function deleteTacticCalendarBlock(blockId: string) {
-  const existing = await pb.collection("tactic_calendar_blocks").getOne(blockId);
-  await pb.collection("tactic_calendar_blocks").delete(blockId);
-  return toBlock(existing);
-}
-
-export async function listTacticCalendarBlocks(input: { cycleId?: string; tacticId?: string; weekNumber?: number; date?: string } = {}) {
-  const filters: string[] = [];
-  if (input.cycleId !== undefined) filters.push(pb.filter("cycle = {:c}", { c: input.cycleId }));
-  if (input.tacticId !== undefined) filters.push(pb.filter("tactic = {:t}", { t: input.tacticId }));
-  if (input.weekNumber !== undefined) filters.push(pb.filter("weekNumber = {:w}", { w: input.weekNumber }));
-  if (input.date !== undefined) filters.push(pb.filter("date = {:d}", { d: input.date }));
-  const records = await pb.collection("tactic_calendar_blocks").getFullList({
-    filter: filters.join(" && "),
-    sort: "date,startTime,id"
-  });
-  return records.map((record) => {
-    const block = toBlock(record);
-    return { block, tacticTitle: "", goalTitle: "" };
-  });
-}
-
-export async function listCalendarBlocksWithTitles(input: { cycleId: string; weekNumber?: number; date?: string }) {
-  const filters: string[] = [pb.filter("cycle = {:c}", { c: input.cycleId })];
-  if (input.weekNumber !== undefined) filters.push(pb.filter("weekNumber = {:w}", { w: input.weekNumber }));
-  if (input.date !== undefined) filters.push(pb.filter("date = {:d}", { d: input.date }));
-  const records = await pb.collection("tactic_calendar_blocks").getFullList({
-    filter: filters.join(" && "),
-    sort: "date,startTime,id",
-    expand: "tactic,tactic.goal"
-  });
-  return records.map((record) => {
-    const tactic = record.expand?.tactic as Record<string, unknown> | undefined;
-    const goal = record.expand?.["tactic.goal"] as Record<string, unknown> | undefined;
-    return {
-      ...toBlock(record),
-      tacticTitle: String(tactic?.title ?? "Unknown"),
-      goalTitle: String(goal?.title ?? "Unknown"),
-      unit: String(tactic?.unit ?? "")
-    };
-  });
-}
-
-export async function moveTacticCalendarBlock(input: {
-  blockId?: string;
-  tacticId?: string;
-  fromDate?: string;
-  toDate: string;
-}) {
-  const sourceBlock = input.blockId
-    ? await pb.collection("tactic_calendar_blocks").getOne(input.blockId).catch(() => null)
-    : null;
-  let block = sourceBlock ? toBlock(sourceBlock) : null;
-
-  if (!block) {
-    if (input.tacticId === undefined || !input.fromDate) throw new Error("Provide either blockId or both tacticId and fromDate");
-    const matches = (await pb.collection("tactic_calendar_blocks").getFullList({
-      filter: pb.filter("tactic = {:t} && date = {:d}", { t: input.tacticId, d: input.fromDate }),
-      sort: "id"
-    })).map(toBlock);
-    if (matches.length === 0) throw new Error(`No tactic block found for tactic ${input.tacticId} on ${input.fromDate}`);
-    if (matches.length > 1) throw new Error(`Multiple tactic blocks found for tactic ${input.tacticId} on ${input.fromDate}; provide blockId`);
-    block = matches[0];
-  }
-
-  validateDate(input.toDate);
-  const targetWeekNumber = await getCurrentWeekNumber(block.cycleId, input.toDate);
-  if (!targetWeekNumber) throw new Error("Target date is not inside the cycle");
-  const tactic = await getTactic(block.tacticId);
-  if (!tactic) throw new Error(`Tactic not found: ${block.tacticId}`);
-  const plan = resolveTacticPlan(tactic, { strict: true });
-  const style = resolveExecutionStyle(plan, tactic, { strict: true });
-  const schedule = await getTacticScheduleForWeek(block.tacticId, targetWeekNumber);
-  const destinationRecords = await pb.collection("tactic_calendar_blocks").getFullList({
-    filter: pb.filter("cycle = {:c} && weekNumber = {:w} && tactic = {:t}", {
-      c: block.cycleId,
-      w: targetWeekNumber,
-      t: block.tacticId
-    })
-  });
-  resolveCalendarBlockValue(
-    plan,
-    destinationRecords
-      .filter((record) => String(record.id) !== block.id)
-      .map((record) => ({ plannedValue: Number(record.plannedValue) })),
-    block.plannedValue,
-    style,
-    schedule?.plannedTarget ?? undefined
-  );
-
-  // Multiple same-tactic blocks on one day are valid (for example morning and
-  // afternoon sessions). Preserve both records instead of destructively merging.
-  const updated = await pb.collection("tactic_calendar_blocks").update(block.id, {
-    weekNumber: targetWeekNumber,
-    date: input.toDate
-  });
-  return { action: "moved" as const, sourceBlockId: block.id, block: toBlock(updated) };
-}
-
-// ---------------------------------------------------------------- week report
-
-export type WeeklyReview = {
-  id: string;
-  cycleId: string;
-  weekNumber: number;
-  executionScore: number | null;
-  weeklyGoals: string | null;
-  wins: string | null;
-  misses: string | null;
-  avoidancePatterns: string | null;
-  lessons: string | null;
-  nextWeekAdjustments: string | null;
-  completedAt: string | null;
-};
-
-function toWeeklyReview(record: Record<string, unknown>): WeeklyReview {
-  return {
-    id: String(record.id),
-    cycleId: String(record.cycle),
-    weekNumber: Number(record.weekNumber),
-    executionScore: record.executionScore === "" || record.executionScore === null ? null : Number(record.executionScore),
-    weeklyGoals: (record.weeklyGoals as string) || null,
-    wins: (record.wins as string) || null,
-    misses: (record.misses as string) || null,
-    avoidancePatterns: (record.avoidancePatterns as string) || null,
-    lessons: (record.lessons as string) || null,
-    nextWeekAdjustments: (record.nextWeekAdjustments as string) || null,
-    completedAt: (record.completedAt as string) || null
-  };
-}
-
-export async function upsertWeeklyReview(input: {
-  cycleId?: string;
-  weekNumber: number;
-  executionScore?: number | null;
-  weeklyGoals?: string | null;
-  wins?: string | null;
-  misses?: string | null;
-  avoidancePatterns?: string | null;
-  lessons?: string | null;
-  nextWeekAdjustments?: string | null;
-  completedAt?: string | null;
-}) {
-  const cycleId = input.cycleId ?? (await getActiveCycle())?.id;
-  if (!cycleId) throw new Error("No active cycle");
-  const existingRecord = await pb
-    .collection("weekly_reviews")
-    .getFirstListItem(pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycleId, w: input.weekNumber }))
-    .catch(() => null);
-  const values = {
-    executionScore: input.executionScore ?? (existingRecord ? (existingRecord.executionScore as string | number) ?? null : null),
-    weeklyGoals: input.weeklyGoals ?? (existingRecord?.weeklyGoals as string) ?? null,
-    wins: input.wins ?? (existingRecord?.wins as string) ?? null,
-    misses: input.misses ?? (existingRecord?.misses as string) ?? null,
-    avoidancePatterns: input.avoidancePatterns ?? (existingRecord?.avoidancePatterns as string) ?? null,
-    lessons: input.lessons ?? (existingRecord?.lessons as string) ?? null,
-    nextWeekAdjustments: input.nextWeekAdjustments ?? (existingRecord?.nextWeekAdjustments as string) ?? null,
-    completedAt: input.completedAt ?? (existingRecord?.completedAt as string) ?? null
-  };
-  if (existingRecord) {
-    const updated = await pb.collection("weekly_reviews").update(existingRecord.id, values);
-    return toWeeklyReview(updated);
-  }
-  const created = await pb.collection("weekly_reviews").create({ cycle: cycleId, weekNumber: input.weekNumber, ...values });
-  return toWeeklyReview(created);
-}
-
-export async function getWeeklyReview(cycleId: string, weekNumber: number) {
-  const record = await pb
-    .collection("weekly_reviews")
-    .getFirstListItem(pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycleId, w: weekNumber }))
-    .catch(() => null);
-  return record ? toWeeklyReview(record) : null;
-}
-
-export type WeeklyReportBlock = {
-  id: string;
-  date: string;
-  startTime: string | null;
-  endTime: string | null;
-  durationMinutes: number | null;
-  plannedValue: number;
-  note: string | null;
-  tacticTitle: string;
-  goalTitle: string;
-};
-
-export type WeeklyReportEntry = {
-  id: string;
-  date: string | null;
-  tacticTitle: string;
-  goalTitle: string;
-  value: number;
-  completed: boolean;
-  note: string | null;
-};
-
-export async function getWeekReport(cycleId: string, weekNumber: number) {
-  const cycle = await getCycleById(cycleId);
-  if (!cycle) throw new Error(`Cycle not found: ${cycleId}`);
-  const week = await pb
-    .collection("cycle_weeks")
-    .getFirstListItem(pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycleId, w: weekNumber }))
-    .catch(() => null);
-  if (!week) throw new Error(`Week ${weekNumber} not found for cycle ${cycleId}`);
-
-  // Weekly reports are final reflections, not a live "through yesterday" dashboard view.
-  // Include the week end date so Sunday/last-day tactics count against the full-week plan.
-  const score = await getWeekScore(cycleId, weekNumber, { asOfDate: String(week.endDate), includeAsOfDate: true });
-
-  const blocks = await listCalendarBlocksWithTitles({ cycleId, weekNumber });
-
-  const logs = (await pb.collection("daily_logs").getFullList({
-    filter: pb.filter("cycle = {:c} && date >= {:s} && date <= {:e}", { c: cycleId, s: String(week.startDate), e: String(week.endDate) }),
-    sort: "date"
-  })).map(toDailyLog);
-
-  const entryRecords = await pb.collection("tactic_entries").getFullList({
-    filter: pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycleId, w: weekNumber }),
-    sort: "date,id",
-    expand: "tactic,tactic.goal"
-  });
-  const entries: WeeklyReportEntry[] = entryRecords.map((record) => {
-    const tactic = record.expand?.tactic as Record<string, unknown> | undefined;
-    const goal = record.expand?.["tactic.goal"] as Record<string, unknown> | undefined;
-    return {
-      id: String(record.id),
-      date: record.date ? String(record.date) : null,
-      tacticTitle: String(tactic?.title ?? "Unknown"),
-      goalTitle: String(goal?.title ?? "Unknown"),
-      value: Number(record.value),
-      completed: Boolean(record.completed),
-      note: (record.note as string) || null
-    };
-  });
-
-  const review = await getWeeklyReview(cycleId, weekNumber);
-
-  const offTrackTactics = score.tacticScores.filter((tacticScore) => tacticScore.status !== "on_track");
-  const carryOverTactics = offTrackTactics.filter((tacticScore) => tacticScore.recurrenceType === "once");
-  const recurringGaps = offTrackTactics.filter((tacticScore) => tacticScore.recurrenceType !== "once");
-  const completedTactics = score.tacticScores.filter((tacticScore) => tacticScore.score >= 1);
-
-  return {
-    cycle,
-    week: {
-      weekNumber,
-      startDate: String(week.startDate),
-      endDate: String(week.endDate)
-    },
-    score,
-    blocks,
-    dailyLogs: logs,
-    entries,
-    review,
-    highlights: {
-      completedTactics,
-      offTrackTactics,
-      carryOverTactics,
-      recurringGaps,
-      bestGoal: [...score.goalScores].sort((a, b) => b.score - a.score)[0] ?? null,
-      weakestGoal: [...score.goalScores].sort((a, b) => a.score - b.score)[0] ?? null
-    }
-  };
-}
-
-export function renderWeekReportMarkdown(report: Awaited<ReturnType<typeof getWeekReport>>) {
-  const lines = [
-    `# ${report.cycle.title} — Week ${report.week.weekNumber} Report`,
-    "",
-    `**Date range:** ${report.week.startDate} → ${report.week.endDate}`,
-    `**Execution Score:** ${formatPercent(report.score.weeklyScore)} (${report.score.status})`,
-    "",
-    "## Wochen-Ziele / Outcomes",
-    "",
-    report.review?.weeklyGoals ?? "_Noch keine Wochen-Outcomes festgelegt._",
-    "",
-    "## Cycle Goal Scores",
-    "",
-    "| Goal | Score | Status |",
-    "|---|---:|---|",
-    ...report.score.goalScores.map((goal) => `| ${goal.goalTitle} | ${formatPercent(goal.score)} | ${goal.status} |`),
-    "",
-    "## Tactic Execution",
-    "",
-    "| Tactic | Goal | Planned | Actual | Score | Status |",
-    "|---|---|---:|---:|---:|---|",
-    ...report.score.tacticScores.map(
-      (tactic) => `| ${tactic.tacticTitle} | ${tactic.goalTitle} | ${formatValue(tactic.planned, tactic.unit)} | ${formatValue(tactic.actual, tactic.unit)} | ${formatPercent(tactic.score)} | ${tactic.status} |`
-    ),
-    "",
-    "## Scheduled Blocks",
-    "",
-    ...report.blocks.map((block) => {
-      const time = block.startTime && block.endTime ? ` ${block.startTime}–${block.endTime}` : "";
-      return `- ${block.date}${time}: ${block.tacticTitle} (${formatValue(block.plannedValue, "planned")})${block.note ? ` — ${block.note}` : ""}`;
-    }),
-    report.blocks.length ? "" : "No scheduled blocks.",
-    "",
-    "## Größte Wins der Woche",
-    "",
-    (report.review?.wins ?? report.dailyLogs.flatMap((log) => log.privateVictories?.split("\n") ?? []).filter(Boolean).join("\n")) ||
-    "_No wins captured yet._",
-    "",
-    "## Reflection",
-    "",
-    [report.review?.lessons, report.review?.nextWeekAdjustments, report.review?.misses, report.review?.avoidancePatterns].filter(Boolean).join("\n") || "_Reflection wird am Ende der Woche gemeinsam ergänzt._",
-    "",
-    "## Nicht vollständig erfüllt diese Woche",
-    "",
-    ...(report.highlights.recurringGaps.length
-      ? report.highlights.recurringGaps.map((tactic) => `- ${tactic.tacticTitle}: ${formatValue(tactic.actual, tactic.unit)} / ${formatValue(tactic.planned, tactic.unit)} (${formatPercent(tactic.score)})`)
-      : ["No recurring tactic gaps."]),
-    "",
-    "## Carry-over in nächste Woche",
-    "",
-    ...(report.highlights.carryOverTactics.length
-      ? report.highlights.carryOverTactics.map((tactic) => `- ${tactic.tacticTitle}: ${formatValue(tactic.actual, tactic.unit)} / ${formatValue(tactic.planned, tactic.unit)} (${formatPercent(tactic.score)})`)
-      : ["No one-time carry-over."])
-  ];
-  return lines.join("\n");
-}
-
-function formatValue(value: number, unit: string) {
-  return `${Number.isInteger(value) ? value : value.toFixed(1)} ${unit}`;
-}
-
-// ---------------------------------------------------------------- dashboard (port of src/core/dashboard.ts)
-
-export type TodayTacticProgress = TacticWeekScore & {
-  remaining: number;
-  isComplete: boolean;
-  todayActual: number;
-  // null for pool rows (occurrence): the actionable number is weekRemaining. --json BREAKING vs earlier builds.
-  todayTarget: number | null;
-  todayRemaining: number;
-  isTodayComplete: boolean;
-  dueToday: boolean;
-  todayKind: "scheduled" | "recurring" | "unscheduled" | "pool";
-  todayLabel: string;
-  weekRemaining: number;
-  weekTarget: number;
-  scheduledBlocks: Array<{
-    id: string;
-    date: string;
-    startTime: string | null;
-    endTime: string | null;
-    durationMinutes: number | null;
-    plannedValue: number;
-    note: string | null;
-  }>;
-};
-
-export type TodaySummary = {
-  relevantCount: number;
-  completedCount: number;
-  remainingCount: number;
-  totalRemaining: number;
-};
-
-export type TodayScheduledBlock = {
-  id: string;
-  tacticId: string;
-  tacticTitle: string;
-  goalTitle: string;
-  date: string;
-  startTime: string | null;
-  endTime: string | null;
-  durationMinutes: number | null;
-  plannedValue: number;
-  note: string | null;
-  unit: string;
-};
-
-type CalendarBlockRow = {
-  id: string;
-  tacticId: string;
-  date: string;
-  startTime: string | null;
-  endTime: string | null;
-  durationMinutes: number | null;
-  plannedValue: number;
-  note: string | null;
-};
-
-type DashboardTacticRow = {
-  tactic: Pick<
-    WeekSnapshotTactic,
-    "id" | "title" | "goalId" | "trackingType" | "recurrenceType" | "recurrenceCount" | "targetValue" | "scoringWeight" | "unit" | "executionStyle"
-  >;
-  goalTitle: string;
-};
-
-function groupBlocksByTactic(blocks: CalendarBlockRow[]) {
-  return blocks.reduce<Record<string, CalendarBlockRow[]>>((acc, block) => {
-    acc[block.tacticId] ??= [];
-    acc[block.tacticId].push(block);
-    return acc;
-  }, {});
-}
-
-function mergeTodayScoreRows(params: {
-  scoreRows: TacticWeekScore[];
-  tacticRows: DashboardTacticRow[];
-  entries: TacticEntryValue[];
-  todayBlocks: CalendarBlockRow[];
-  weekBlocks: CalendarBlockRow[];
-  asOfDate: string;
-}) {
-  const mergedRows = [...params.scoreRows];
-  const scoreIds = new Set(params.scoreRows.map((row) => row.tacticId));
-
-  // Explicit calendar blocks for the week override schedule required:false:
-  // a block is newer, specific intent, so the tactic becomes visible this week
-  // even when the schedule row says it is not required.
-  const blockedTacticIds = new Set([
-    ...params.todayBlocks.map((block) => block.tacticId),
-    ...params.weekBlocks.map((block) => block.tacticId)
-  ]);
-  for (const tacticId of blockedTacticIds) {
-    if (scoreIds.has(tacticId)) continue;
-    const tacticRow = params.tacticRows.find((row) => row.tactic.id === tacticId);
-    if (!tacticRow) continue;
-    const plan = {
-      trackingType: tacticRow.tactic.trackingType as TrackingType,
-      recurrenceType: tacticRow.tactic.recurrenceType as RecurrenceType,
-      recurrenceCount: Math.max(1, Number(tacticRow.tactic.recurrenceCount ?? 1)),
-      targetValue: Number(tacticRow.tactic.targetValue ?? 1),
-      unit: tacticRow.tactic.unit
-    };
-    const style = resolveExecutionStyle(plan, tacticRow.tactic);
-    const tacticEntries = params.entries.filter((entry) => entry.tacticId === tacticId);
-    const fullWeekPlanned = params.weekBlocks
-      .filter((block) => block.tacticId === tacticId)
-      .reduce((sum, block) => sum + Number(block.plannedValue), 0);
-    const mergedScheduledBlocks = params.weekBlocks
-      .filter((block) => block.tacticId === tacticId)
-      .map((block) => ({ date: block.date, plannedValue: Number(block.plannedValue) }))
-      .sort((left, right) => left.date.localeCompare(right.date));
-    const mergedScheduledDates = mergedScheduledBlocks.map((block) => block.date);
-
-    mergedRows.push({
-      tacticId,
-      tacticTitle: tacticRow.tactic.title,
-      goalId: String(tacticRow.tactic.goalId),
-      goalTitle: tacticRow.goalTitle,
-      planned: 0,
-      fullWeekPlanned,
-      actual: getActualProgress(plan, tacticEntries, style),
-      score: 0,
-      weight: Number(tacticRow.tactic.scoringWeight),
-      status:
-        resolveScheduledStatus({
-          style,
-          fullWeekPlanned,
-          planned: 0,
-          actual: getActualProgress(plan, tacticEntries, style),
-          scheduledDates: mergedScheduledDates,
-          scheduledBlocks: mergedScheduledBlocks,
-          asOfDate: params.asOfDate
-        }) ?? "off_track",
-      scheduled: normalizeAmount(
-        mergedScheduledBlocks.reduce((sum, block) => sum + Number(block.plannedValue), 0)
-      ),
-      unit: tacticRow.tactic.unit,
-      trackingType: plan.trackingType,
-      recurrenceType: plan.recurrenceType,
-      recurrenceCount: plan.recurrenceCount,
-      targetValue: plan.targetValue,
-      executionStyle: style
-    });
-  }
-
-  return mergedRows;
-}
-
-export function buildTodayTactics(
-  scores: TacticWeekScore[],
-  entries: TacticEntryValue[],
-  date: string,
-  todayBlocks: CalendarBlockRow[],
-  _weekBlocks: CalendarBlockRow[]
-): TodayTacticProgress[] {
-  const blocksTodayByTactic = groupBlocksByTactic(todayBlocks);
-
-  return scores
-    .map((score) => {
-      const plan = {
-        trackingType: score.trackingType as TrackingType,
-        recurrenceType: score.recurrenceType as RecurrenceType,
-        recurrenceCount: score.recurrenceCount,
-        targetValue: score.targetValue,
-        unit: score.unit
-      };
-      const tacticEntriesForWeek = entries.filter((entry) => entry.tacticId === score.tacticId);
-      const scheduledBlocks = (blocksTodayByTactic[score.tacticId] ?? []).map((block) => ({
-        id: block.id,
-        date: block.date,
-        startTime: block.startTime,
-        endTime: block.endTime,
-        durationMinutes: block.durationMinutes,
-        plannedValue: Number(block.plannedValue) || 1,
-        note: block.note
-      }));
-      const style: ExecutionStyle = isExecutionStyle(score.executionStyle)
-        ? score.executionStyle
-        : deriveExecutionStyle(plan);
-      const weekTarget = normalizeAmount(score.fullWeekPlanned);
-      const remaining = normalizeAmount(Math.max(weekTarget - score.actual, 0));
-      const weekRemaining = remaining;
-      const isComplete = remaining === 0;
-
-      if (style === "toggle") {
-        const todayActual = getTodayProgress(plan, tacticEntriesForWeek, date, style);
-        const isRecurringToday =
-          plan.recurrenceType === "daily" ||
-          (plan.recurrenceType === "weekdays" && isWeekdayDate(date));
-        const active = weekTarget > 0 || score.actual > 0;
-        const todayTarget = active && isRecurringToday ? 1 : 0;
-        const todayRemaining = normalizeAmount(Math.max(todayTarget - todayActual, 0));
-        return {
-          ...score,
-          planned: weekTarget,
-          remaining,
-          isComplete,
-          todayActual,
-          todayTarget,
-          todayRemaining,
-          isTodayComplete: todayTarget > 0 && todayRemaining === 0,
-          dueToday: todayTarget > 0 && todayRemaining > 0,
-          todayKind: todayTarget > 0 ? "recurring" : "unscheduled",
-          todayLabel: todayTarget > 0 ? "Recurring today" : "Not scheduled today",
-          weekRemaining,
-          weekTarget,
-          scheduledBlocks
-        } satisfies TodayTacticProgress;
-      }
-
-      if (style === "occurrence") {
-        const todayActual = getTodayProgress(plan, tacticEntriesForWeek, date, style);
-        const scheduledTodayTarget = normalizeAmount(
-          scheduledBlocks.reduce((sum, block) => sum + Number(block.plannedValue), 0)
-        );
-        const hasScheduledToday = scheduledTodayTarget > 0;
-        const isRecurringToday =
-          !hasScheduledToday &&
-          (weekTarget > 0 || score.actual > 0) &&
-          (plan.recurrenceType === "daily" ||
-            (plan.recurrenceType === "weekdays" && isWeekdayDate(date)));
-        const todayTarget = hasScheduledToday
-          ? scheduledTodayTarget
-          : isRecurringToday
-            ? getOccurrenceTarget(plan)
-            : 0;
-        const todayRemaining = normalizeAmount(Math.max(todayTarget - todayActual, 0));
-        return {
-          ...score,
-          planned: weekTarget,
-          remaining,
-          isComplete,
-          todayActual,
-          todayTarget: todayTarget > 0 ? todayTarget : null,
-          todayRemaining: todayTarget > 0 ? todayRemaining : weekRemaining,
-          isTodayComplete: todayTarget > 0 && todayRemaining === 0,
-          dueToday: todayTarget > 0 && todayRemaining > 0,
-          todayKind: hasScheduledToday ? "scheduled" : isRecurringToday ? "recurring" : "pool",
-          todayLabel: hasScheduledToday
-            ? `${formatAmount(scheduledTodayTarget)} ${score.unit} scheduled`
-            : isRecurringToday
-              ? "Recurring today"
-              : `${formatAmount(weekRemaining)} von ${formatAmount(weekTarget)} offen`,
-          weekRemaining,
-          weekTarget,
-          scheduledBlocks
-        } satisfies TodayTacticProgress;
-      }
-
-      // Volume: calendar blocks are due on their specific date. Daily and
-      // weekday plans remain recurrence-scheduled; flexible weekly pools do not
-      // leak into Today until the user places a block on the calendar.
-      const todayActual = getTodayProgress(plan, tacticEntriesForWeek, date, style);
-      const scheduledTodayTarget = normalizeAmount(
-        scheduledBlocks.reduce((sum, block) => sum + Number(block.plannedValue), 0)
-      );
-      const recurringTarget = getOccurrenceTarget(plan);
-      const hasScheduledToday = scheduledTodayTarget > 0;
-      const isRecurringToday =
-        !hasScheduledToday &&
-        (score.fullWeekPlanned > 0 || score.actual > 0) &&
-        (plan.recurrenceType === "daily" ||
-          (plan.recurrenceType === "weekdays" && isWeekdayDate(date)));
-      const todayTarget = hasScheduledToday
-        ? scheduledTodayTarget
-        : isRecurringToday
-          ? recurringTarget
-          : 0;
-      const todayRemaining = normalizeAmount(Math.max(todayTarget - todayActual, 0));
-      const isTodayComplete = todayTarget > 0 && todayRemaining === 0;
-      const dueToday = (hasScheduledToday || isRecurringToday) && !isTodayComplete;
-      const todayKind = hasScheduledToday ? "scheduled" : isRecurringToday ? "recurring" : "unscheduled";
-      const todayLabel =
-        todayKind === "scheduled"
-          ? `${formatAmount(scheduledTodayTarget)} ${score.unit} scheduled`
-          : isRecurringToday
-            ? "Recurring today"
-            : "Not scheduled today";
-
-      return {
-        ...score,
-        planned: score.fullWeekPlanned,
-        remaining,
-        isComplete: remaining === 0,
-        todayActual,
-        todayTarget,
-        todayRemaining,
-        isTodayComplete,
-        dueToday,
-        todayKind,
-        todayLabel,
-        weekRemaining,
-        weekTarget,
-        scheduledBlocks
-      } satisfies TodayTacticProgress;
-    })
-    .filter((score) => score.todayKind === "scheduled" || score.todayKind === "recurring")
-    .sort((left, right) => {
-      const leftPriority = left.todayKind === "scheduled" ? 0 : left.todayKind === "recurring" ? 1 : 2;
-      const rightPriority = right.todayKind === "scheduled" ? 0 : right.todayKind === "recurring" ? 1 : 2;
-      if (leftPriority !== rightPriority) return leftPriority - rightPriority;
-      const leftStart = left.scheduledBlocks[0]?.startTime ?? "99:99";
-      const rightStart = right.scheduledBlocks[0]?.startTime ?? "99:99";
-      if (leftStart !== rightStart) return leftStart.localeCompare(rightStart);
-      if (left.isTodayComplete !== right.isTodayComplete) return Number(left.isTodayComplete) - Number(right.isTodayComplete);
-      if (left.todayRemaining !== right.todayRemaining) return right.todayRemaining - left.todayRemaining;
-      if (left.remaining !== right.remaining) return right.remaining - left.remaining;
-      return left.tacticTitle.localeCompare(right.tacticTitle);
-    });
-}
-
-export type TacticTodayState = {
-  tactic: Tactic;
-  executionStyle: ExecutionStyle;
-  todayActual: number;
-  todayTarget: number | null;
-};
-
-/**
- * Load only the data needed to authorize one Today step. This deliberately
- * avoids the dashboard's score, review, event, and all-tactic fan-out; the
- * PocketBase execute hook remains the final atomic write boundary.
- */
-export async function getTacticTodayState(
-  tacticId: string,
-  date: string = todayDateString()
-): Promise<TacticTodayState | null> {
-  const [cycle, tactic] = await Promise.all([getActiveCycle(), getTactic(tacticId)]);
-  if (!cycle || !tactic) return null;
-
-  const [goalRecord, weekNumber] = await Promise.all([
-    pb.collection("goals").getOne(tactic.goalId).catch(rethrowConnectionError),
-    getCurrentWeekNumber(cycle.id, date)
-  ]);
-  if (!goalRecord || String(goalRecord.cycle) !== cycle.id || !weekNumber) return null;
-
-  const [schedule, blockRecords, entryRecords] = await Promise.all([
-    getTacticScheduleForWeek(tacticId, weekNumber),
-    pb.collection("tactic_calendar_blocks").getFullList({
-      filter: pb.filter(
-        "cycle = {:c} && weekNumber = {:w} && tactic = {:t} && date = {:d}",
-        { c: cycle.id, w: weekNumber, t: tacticId, d: date }
-      )
-    }),
-    pb.collection("tactic_entries").getFullList({
-      filter: pb.filter(
-        "cycle = {:c} && weekNumber = {:w} && tactic = {:t} && date = {:d}",
-        { c: cycle.id, w: weekNumber, t: tacticId, d: date }
-      )
-    })
-  ]);
-
-  const plan = resolveTacticPlan(tactic, { strict: true });
-  const executionStyle = resolveExecutionStyle(plan, tactic, { strict: true });
-  const blocks = blockRecords.map((record) => ({
-    date: String(record.date),
-    plannedValue: Number(record.plannedValue)
-  }));
-  const scheduledTarget = normalizeAmount(
-    blocks.reduce((sum, block) => sum + (Number.isFinite(block.plannedValue) ? block.plannedValue : 0), 0)
-  );
-  const entries: TacticEntryValue[] = entryRecords.map((record) => ({
-    tacticId: String(record.tactic),
-    date: record.date ? String(record.date) : null,
-    value: Number(record.value),
-    completed: Boolean(record.completed)
-  }));
-  const todayActual = getTodayProgress(plan, entries, date, executionStyle);
-  const weekTarget = normalizeAmount(schedule?.plannedTarget ?? getPlannedWeeklyTarget(plan));
-  const recurringToday =
-    scheduledTarget <= 0 &&
-    weekTarget > 0 &&
-    isTacticActiveInWeek(tactic, weekNumber, schedule) &&
-    (plan.recurrenceType === "daily" ||
-      (plan.recurrenceType === "weekdays" && isWeekdayDate(date)));
-  const todayTarget =
-    scheduledTarget > 0
-      ? scheduledTarget
-      : recurringToday
-        ? executionStyle === "toggle"
-          ? 1
-          : getOccurrenceTarget(plan)
-        : null;
-
-  return {
-    tactic,
-    executionStyle,
-    todayActual,
-    todayTarget
-  };
-}
-
-export async function getDashboardData(cycleId?: string, weekNumber?: number, asOfDate?: string) {
-  const asOf = asOfDate ?? todayDateString();
-  const cycle = cycleId ? await getCycleById(cycleId) : await getActiveCycle();
-  if (!cycle) return null;
-  const currentWeek = weekNumber ?? (await getCurrentWeekNumber(cycle.id, asOf)) ?? 1;
-  const weeks = await getCycleWeeks(cycle.id);
-  const snapshotRow = await getWeekSnapshot(cycle.id, currentWeek);
-  const snapshot = snapshotRow?.snapshot;
-  const goals = snapshot?.goals.map((goal) => ({ ...goal, cycleId: cycle.id })) ?? (await listGoals(cycle.id));
-  const lags = snapshot
-    ? snapshot.lagIndicators
-    : (await pb.collection("lag_indicators").getFullList({ filter: pb.filter("goal.cycle = {:c}", { c: cycle.id }) })).map(toLag);
-  const score = await getWeekScore(cycle.id, currentWeek, { asOfDate, snapshotRow });
-  const tactics: DashboardTacticRow[] = snapshot
-    ? snapshot.tactics.map((tactic) => ({
-        tactic: { ...tactic, goalId: String(tactic.goalId) } as DashboardTacticRow["tactic"],
-        goalTitle: snapshot.goals.find((goal) => String(goal.id) === String(tactic.goalId))?.title ?? "Unknown goal"
-      }))
-    : await listTactics(cycle.id);
-  const entryRecords = await pb.collection("tactic_entries").getFullList({
-    filter: pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycle.id, w: currentWeek })
-  });
-  const weekEntries = entryRecordsToValues(entryRecords);
-  const weekBlockRecords = await pb.collection("tactic_calendar_blocks").getFullList({
-    filter: pb.filter("cycle = {:c} && weekNumber = {:w}", { c: cycle.id, w: currentWeek }),
-    sort: "date,startTime,id"
-  });
-  const calendarBlocksForWeek: CalendarBlockRow[] = weekBlockRecords.map((record) => ({
-    id: String(record.id),
-    tacticId: String(record.tactic),
-    date: String(record.date),
-    startTime: (record.startTime as string) || null,
-    endTime: (record.endTime as string) || null,
-    durationMinutes: record.durationMinutes === "" || record.durationMinutes === null ? null : Number(record.durationMinutes),
-    plannedValue: Number(record.plannedValue),
-    note: (record.note as string) || null
-  }));
-  const today = asOfDate ?? todayDateString();
-  const normalizedTodayBlocks = calendarBlocksForWeek.filter((block) => block.date === today);
-  const todayScoreRows = mergeTodayScoreRows({
-    scoreRows: score.tacticScores,
-    tacticRows: tactics,
-    entries: weekEntries,
-    todayBlocks: normalizedTodayBlocks,
-    weekBlocks: calendarBlocksForWeek,
-    asOfDate: today
-  });
-  const todayTactics = buildTodayTactics(
-    todayScoreRows,
-    weekEntries,
-    today,
-    normalizedTodayBlocks,
-    calendarBlocksForWeek
-  );
-  const tacticMeta = new Map(
-    todayScoreRows.map((item) => [item.tacticId, { tacticTitle: item.tacticTitle, goalTitle: item.goalTitle, unit: item.unit }])
-  );
-  const todayScheduledBlocks = normalizedTodayBlocks
-    .map((block) => {
-      const meta = tacticMeta.get(block.tacticId);
-      if (!meta) return null;
-      return {
-        id: block.id,
-        tacticId: block.tacticId,
-        tacticTitle: meta.tacticTitle,
-        goalTitle: meta.goalTitle,
-        date: block.date,
-        startTime: block.startTime,
-        endTime: block.endTime,
-        durationMinutes: block.durationMinutes,
-        plannedValue: block.plannedValue,
-        note: block.note,
-        unit: meta.unit
-      } satisfies TodayScheduledBlock;
-    })
-    .filter((block): block is TodayScheduledBlock => block !== null);
-  const todaySummary: TodaySummary = {
-    relevantCount: todayTactics.length,
-    completedCount: todayTactics.filter((tactic) => tactic.isTodayComplete).length,
-    remainingCount: todayTactics.filter((tactic) => !tactic.isTodayComplete).length,
-    totalRemaining: todayTactics.reduce((sum, tactic) => sum + tactic.todayRemaining, 0)
-  };
-  const endDate = new Date(`${cycle.endDate}T00:00:00.000Z`);
-  const now = new Date(`${todayDateString()}T00:00:00.000Z`);
-  const daysLeft = Math.max(0, Math.floor((endDate.getTime() - now.getTime()) / 86400000) + 1);
-
-  const reviews = (await pb.collection("weekly_reviews").getFullList({
-    filter: pb.filter("cycle = {:c}", { c: cycle.id }),
-    sort: "weekNumber"
-  })).map(toWeeklyReview);
-
-  const recentEventRecords = await pb.collection("events").getFullList({
-    filter: pb.filter("cycle = {:c}", { c: cycle.id }),
-    sort: "-id",
-    perPage: 10
-  });
-  const recentEvents = recentEventRecords.map((record) => ({
-    id: String(record.id),
-    type: String(record.type),
-    createdAt: String(record.created)
-  }));
-
-  return {
-    cycle,
-    currentWeek,
-    weeks,
-    goals: goals.map((goal) => ({
-      ...goal,
-      lagIndicators: lags.filter((lag) => lag.goalId === goal.id)
-    })),
-    score,
-    tactics,
-    daysLeft,
-    todaySummary,
-    todayTactics,
-    todayScheduledBlocks,
-    recentEvents,
-    reviews
-  };
-}
-
-// ---------------------------------------------------------------- events
-
-export async function recordEvent(type: string, payload: unknown, cycleId?: string | null) {
-  await pb.collection("events").create({
-    cycle: cycleId ?? "",
-    type,
-    payloadJson: payload ? JSON.stringify(payload) : ""
-  });
-}
-
-// ---------------------------------------------------------------- cycle update + daily-log range query (appended)
-
-export async function updateCycle(input: { id: string; title?: string; vision?: string | null; startDate?: string }): Promise<Cycle> {
-  const existing = await pb.collection("cycles").getOne(input.id).catch(() => null);
-  if (!existing) throw new Error(`Cycle not found: ${input.id}`);
-  const patch: Record<string, unknown> = {};
-  if (input.title !== undefined) {
-    if (input.title.trim() === "") throw new Error("title must be non-empty");
-    patch.title = input.title;
-    const slugBase = slugify(input.title);
-    let slug = slugBase;
-    let index = 1;
-    for (;;) {
-      const clash = await pb
-        .collection("cycles")
-        .getFirstListItem(pb.filter("slug = {:s}", { s: slug }))
-        .catch(() => null);
-      if (!clash || String(clash.id) === input.id) break;
-      index += 1;
-      slug = `${slugBase}-${index}`;
-    }
-    patch.slug = slug;
-  }
-  if (input.vision !== undefined) patch.vision = input.vision;
-  let newStart: Date | null = null;
-  if (input.startDate !== undefined) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.startDate) || isNaN(parseDate(input.startDate).getTime())) {
-      throw new Error(`Invalid startDate: ${input.startDate}`);
-    }
-    const entryPage = await pb
-      .collection("tactic_entries")
-      .getList(1, 1, { filter: pb.filter("cycle = {:c}", { c: input.id }) });
-    if (entryPage.items.length > 0) {
-      throw new Error("cycle has entries — --start refused, create a new cycle instead");
-    }
-    const start = startOfIsoWeek(parseDate(input.startDate));
-    const end = addDays(start, 83);
-    patch.startDate = toDateString(start);
-    patch.endDate = toDateString(end);
-    newStart = start;
-  }
-  if (Object.keys(patch).length === 0) return toCycle(existing);
-  const updated = await pb.collection("cycles").update(input.id, patch);
-  if (newStart) {
-    const start: Date = newStart;
-    const oldWeeks = await pb.collection("cycle_weeks").getFullList({
-      filter: pb.filter("cycle = {:c}", { c: input.id })
-    });
-    for (const week of oldWeeks) {
-      await pb.collection("cycle_weeks").delete(week.id);
-    }
-    const weeks = Array.from({ length: 12 }).map((_, i) => ({
-      cycle: input.id,
-      weekNumber: i + 1,
-      startDate: toDateString(addDays(start, i * 7)),
-      endDate: toDateString(addDays(start, i * 7 + 6)),
-      label: `Week ${i + 1}`
-    }));
-    // sequential — the PB SDK auto-cancels parallel identical requests on one client
-    for (const week of weeks) {
-      await pb.collection("cycle_weeks").create(week);
-    }
-  }
-  return toCycle(updated);
-}
-
-export async function listDailyLogs(cycleId: string, from: string, to: string): Promise<DailyLog[]> {
-  const records = await pb.collection("daily_logs").getFullList({
-    filter: pb.filter("cycle = {:c} && date >= {:f} && date <= {:t}", { c: cycleId, f: from, t: to }),
-    sort: "date"
-  });
-  return records.map(toDailyLog);
-}
-
-// ---------------------------------------------------------------- calendar range query + backlog (appended)
-
-export async function listCalendarBlocksForRange(cycleId: string, from: string, to: string) {
-  validateDate(from);
-  validateDate(to);
-  const records = await pb.collection("tactic_calendar_blocks").getFullList({
-    filter: pb.filter("cycle = {:c} && date >= {:f} && date <= {:t}", { c: cycleId, f: from, t: to }),
-    sort: "date,startTime,id",
-    expand: "tactic,tactic.goal"
-  });
-  return records.map((record) => {
-    const tactic = record.expand?.tactic as Record<string, unknown> | undefined;
-    const goal = record.expand?.["tactic.goal"] as Record<string, unknown> | undefined;
-    return {
-      ...toBlock(record),
-      tacticTitle: String(tactic?.title ?? "Unknown"),
-      goalTitle: String(goal?.title ?? "Unknown"),
-      unit: String(tactic?.unit ?? "")
-    };
-  });
-}
-
-export type SchedulingItem = {
-  id: string;
-  title: string;
-  goalTitle: string;
-  executionStyle: ExecutionStyle;
-  /** Base tactic target, used when a week has no explicit schedule row. */
-  baseWeekTarget: number;
-  /** Effective targets for every week with an explicit tactic_schedules row. */
-  weekTargets: Record<number, number>;
-  /** Weekly target (pool size) for the reference week. */
-  weekTarget: number;
-  /** Total scheduled value in the reference week (not block count). */
-  scheduled: number;
-  remaining: number;
-  scheduledDates: string[];
-  trackingType: string;
-  unit: string;
-};
-
-/**
- * Every ACTIVE tactic with its scheduling progress for a reference week —
- * scheduled rows stay visible (marked) instead of disappearing, so the
- * sidebar reads "X von N gescheduled" per tactic. Inactive tactics
- * (retired dupes etc.) never show up here.
- */
-export async function listSchedulingState(cycleId: string, weekStartISO: string, weekEndISO: string): Promise<SchedulingItem[]> {
-  const [rows, blocks, scheduleRecords, referenceWeekNumber] = await Promise.all([
-    listTactics(cycleId),
-    listCalendarBlocksForRange(cycleId, weekStartISO, weekEndISO),
-    pb.collection("tactic_schedules").getFullList(),
-    getCurrentWeekNumber(cycleId, weekStartISO)
-  ]);
-  const schedules = scheduleRecords.map(toTacticSchedule);
-  return rows
-    .filter(({ tactic }) => tactic.active !== false)
-    .map(({ tactic, goalTitle }) => {
-      const plan = resolveTacticPlan(tactic);
-      const tacticBlocks = blocks.filter((block) => block.tacticId === tactic.id);
-      const dates = tacticBlocks.map((block) => block.date).sort();
-      const baseWeekTarget = normalizeAmount(getPlannedWeeklyTarget(plan));
-      const weekTargets = schedules
-        .filter((schedule) => schedule.tacticId === tactic.id)
-        .reduce<Record<number, number>>((targets, schedule) => {
-          targets[schedule.weekNumber] = normalizeAmount(schedule.plannedTarget ?? baseWeekTarget);
-          return targets;
-        }, {});
-      const progress = getSchedulingProgress(
-        plan,
-        tacticBlocks,
-        referenceWeekNumber === null ? undefined : weekTargets[referenceWeekNumber]
-      );
-      return {
-        id: tactic.id,
-        title: tactic.title,
-        goalTitle,
-        executionStyle: resolveExecutionStyle(plan, tactic),
-        baseWeekTarget,
-        weekTargets,
-        weekTarget: progress.weekTarget,
-        scheduled: progress.scheduled,
-        remaining: progress.remaining,
-        scheduledDates: dates,
-        trackingType: tactic.trackingType,
-        unit: tactic.unit
-      };
-    })
-    .sort((a, b) => a.scheduled - b.scheduled || a.title.localeCompare(b.title));
-}
-
-export async function getCalendarBlock(blockId: string) {
-  const record = await pb.collection("tactic_calendar_blocks").getOne(blockId).catch(() => null);
-  return record ? toBlock(record) : null;
-}
-
-export async function undoLatestTacticEntry(tacticId: string, date: string) {
-  const entries = await pb.collection("tactic_entries").getFullList({
-    filter: pb.filter("tactic = {:t} && date = {:d}", { t: tacticId, d: date }),
-    sort: "-created"
-  });
-  const latest = entries[0];
-  if (!latest) return null;
-  const latestValue = normalizeAmount(Number(latest.value));
-  if (latestValue > 1) {
-    await pb.collection("tactic_entries").update(latest.id, {
-      value: normalizeAmount(latestValue - 1)
-    });
-  } else if (amountsEqual(latestValue, 1)) {
-    await pb.collection("tactic_entries").delete(latest.id);
-  } else {
-    return null;
-  }
-  return String(latest.id);
+  return mapDailyLog(data.daily_log);
 }

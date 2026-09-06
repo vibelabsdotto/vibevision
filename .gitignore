@@ -37,6 +37,11 @@ skills-lock.json
 backend/pocketbase/bin/
 backend/pocketbase/pb_migrations/
 
+# nestjs backend local artifacts (regenerable — never commit)
+backend/dist/
+backend/data/
+backend/coverage/
+
 # CLI state (instance + stored superuser API keys — never commit)
 .vv/
 

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { buttonClasses, inputClasses, surfaceClasses } from "@/app/components/ui";
+import { authClient } from "@/app/lib/auth-client";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -15,25 +16,17 @@ export default function LoginPage() {
     setLoading(true);
     setError(null);
     const formData = new FormData(event.currentTarget);
-    try {
-      const response = await fetch("/api/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: String(formData.get("email") ?? ""),
-          password: String(formData.get("password") ?? "")
-        })
-      });
-      const payload = (await response.json()) as { error?: string };
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Login failed");
-      }
-      router.replace("/");
-      router.refresh();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Login failed");
+    const { error: signInError } = await authClient.signIn.email({
+      email: String(formData.get("email") ?? ""),
+      password: String(formData.get("password") ?? "")
+    });
+    if (signInError) {
+      setError(signInError.message ?? "Login failed");
       setLoading(false);
+      return;
     }
+    router.replace("/");
+    router.refresh();
   }
 
   return (
@@ -42,8 +35,7 @@ export default function LoginPage() {
         <p className="eyebrow">VibeVision</p>
         <h1 className="mt-2 font-display text-3xl tracking-tight">Sign in</h1>
         <p className="mt-2 text-sm text-ink-2">
-          Single-user 12 Week Year execution OS. Ask your operator for an account, or run{" "}
-          <code className="rounded bg-surface-2 px-1 font-mono text-xs">npm run pb:migrate</code> to set one up.
+          Single-user 12 Week Year execution OS. Ask your operator for an account.
         </p>
         <form className="mt-6 space-y-4" onSubmit={onSubmit}>
           <label className="block text-sm text-ink-2">

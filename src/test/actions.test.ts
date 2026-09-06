@@ -160,13 +160,15 @@ describe("stepEntryAction daily bounds", () => {
     });
   });
 
-  it("honors the tactic's explicit occurrence style when adding a block", async () => {
-    mocks.executionStyle = "occurrence";
+  it("surfaces API validation errors when adding a block", async () => {
+    mocks.addTacticCalendarBlock.mockRejectedValueOnce(
+      Object.assign(new Error("400: bad_request"), { status: 400 })
+    );
 
     await expect(
       addBlockAction({ tacticId: "t1", date: "2026-04-15", plannedValue: 1.5 })
-    ).rejects.toThrow("Occurrence block size must be a whole number");
-    expect(mocks.addTacticCalendarBlock).not.toHaveBeenCalled();
+    ).rejects.toThrow("400");
+    expect(mocks.addTacticCalendarBlock).toHaveBeenCalledTimes(1);
   });
 
   it("delegates weekly cap validation so a raised schedule override can exceed the base target", async () => {

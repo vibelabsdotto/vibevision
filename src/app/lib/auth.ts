@@ -1,39 +1,16 @@
-import { cookies } from "next/headers";
-
-import { pbAuthCookieName } from "@/app/lib/crypto";
-import { clearPbAuth, pb, setPbAuth } from "@/app/lib/pb";
+import { getSession, type ServerUser } from "@/app/lib/server-auth";
 
 export type AuthState = {
-  token: string;
-  user: { id: string; email: string } | null;
+  user: ServerUser | null;
 };
 
 /**
- * Reads the PocketBase auth cookie, validates it against PocketBase (authRefresh)
- * and installs the session on the shared PB client used by all core functions.
+ * Reads the Better-Auth session (via the API) for Server Components.
+ * No token handling here — the session cookie goes straight to the API.
  */
 export async function getAuth(): Promise<AuthState> {
-  const cookieStore = await cookies();
-  const token = cookieStore.get(pbAuthCookieName())?.value ?? "";
-
-  if (!token) {
-    clearPbAuth();
-    return { token: "", user: null };
-  }
-
-  try {
-    // install the token BEFORE refreshing — authRefresh uses the authStore token
-    setPbAuth(token, { id: "", email: "" });
-    const refresh = await pb.collection("users").authRefresh();
-    const record = refresh.record as unknown as { id: string; email: string };
-    if (refresh.token) {
-      setPbAuth(refresh.token, { id: record.id, email: record.email });
-    }
-    return { token: refresh.token || token, user: { id: record.id, email: record.email } };
-  } catch {
-    clearPbAuth();
-    return { token: "", user: null };
-  }
+  const session = await getSession();
+  return { user: session?.user ?? null };
 }
 
 export async function requireAuth(): Promise<AuthState> {

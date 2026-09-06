@@ -2,8 +2,9 @@
 /**
  * vibevision — the VibeVision CLI.
  *
- * Operates any VibeVision instance (PocketBase) with a stored API key,
- * reusing the same core functions as the web app. See README.md → "CLI".
+ * Operates any VibeVision instance (NestJS API) with a stored API token,
+ * minted in the web app (/settings/tokens) or via `vibevision tokens create`.
+ * See README.md → "CLI".
  *
  * Global flags: --instance <url> (override instance), --json (machine output).
  */
@@ -19,6 +20,7 @@ import {
   saveConfig
 } from "./lib/config";
 import { UsageError, connect, health, lastConnectedInstance } from "./lib/client";
+import { initApi, apiFetch } from "./lib/api";
 import * as C from "./lib/commands";
 
 const HELP = `vibevision — VibeVision CLI (12 Week Year execution OS)
@@ -31,11 +33,15 @@ Output: --json prints the raw data object (default: human-readable tables)
 INSTANCE & AUTH
   vibevision config set instance <url>        remember the instance for future runs
   vibevision config get                       show current instance + stored keys
-  vibevision auth login --instance <url> --email <superuser> --password <pw>
-                                      mint & store the API key for that instance
-  vibevision auth whoami --instance <url>     verify the stored API key against the instance
-  vibevision auth logout --instance <url>     remove the stored API key
+  vibevision auth login --instance <url> --token <vv_…>
+                                      store the API token for that instance
+                                      (mint it in the web app: /settings/tokens)
+  vibevision auth whoami --instance <url>     verify the stored API token against the instance
+  vibevision auth logout --instance <url>     remove the stored API token
   vibevision health                           check instance reachability (no auth needed)
+  vibevision tokens create --name <label>     mint a new API token (needs a stored token)
+  vibevision tokens ls                       list tokens (prefixes only)
+  vibevision tokens revoke --id <tokenId>     revoke a token
 
 CYCLES
   vibevision cycles                           list cycles (* = active)
@@ -77,7 +83,7 @@ ANALYSIS
 
 Examples:
   vibevision config set instance https://vision-pb.vibelabs.to
-  vibevision auth login --email vision-admin@vibelabs.local --password <pw>
+  vibevision auth login --instance <url> --token <vv_…>
   vibevision today --json
   vibevision log entry --tactic 1l61agqw… --value 2 --note "two pieces posted"`;
 
@@ -162,55 +168,35 @@ async function main(): Promise<void> {
   if (command === "auth") {
     const url = (instanceFlag ?? resolveInstance()) ?? fail("vibevision auth needs --instance <url> (or a configured instance)");
     if (sub === "login") {
-      const email = str(flags, "email");
-      const password = str(flags, "password");
-      if (!email || !password) fail("vibevision auth login needs --email <superuser> and --password <pw>");
-      const base = url.replace(/\/+$/, "");
-      const res = await fetch(`${base}/api/collections/_superusers/auth-with-password`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identity: email, password }),
-        signal: AbortSignal.timeout(15_000)
-      }).catch((err: unknown) => {
-        throw new Error(`Cannot reach ${base}: ${err instanceof Error ? err.message : String(err)}`);
-      });
-      if (!res.ok) {
-        const detail = (await res.text()).slice(0, 200);
-        fail(`Login failed (${res.status}). The account must be a PocketBase superuser (Dashboard user), not a regular app user. ${detail}`);
-      }
-      const data = (await res.json()) as { token?: string };
-      if (!data.token) fail("Instance did not return a token.");
+      const token = str(flags, "token");
+      if (!token) fail("vibevision auth login needs --token <vv_…> (mint it in the web app: /settings/tokens)");
+      if (!/^vv_[0-9a-f]{48}$/.test(token)) fail("vibevision auth login needs a valid token (vv_ + 48 hex chars)");
       // verify the token actually authenticates before persisting it
-      const check = await health(url);
-      if (!check.ok) fail(`Instance unhealthy after login — not storing the key.`);
-      const verify = await fetch(`${base}/api/collections`, {
-        headers: { Authorization: data.token },
-        signal: AbortSignal.timeout(15_000)
-      });
-      if (!verify.ok) fail(`Token rejected by the instance (${verify.status}) — not storing it.`);
-      saveApiKey(url, data.token, { email });
-      console.log(`✓ API key stored for ${instanceKey(url)} (superuser ${email}). Use: vibevision cycles`);
+      initApi(url, token);
+      try {
+        await apiFetch("GET", "/v1/dashboard");
+      } catch {
+        fail(`Token rejected by the instance — not storing it.`);
+      }
+      saveApiKey(url, token, {});
+      console.log(`✓ API token stored for ${instanceKey(url)}. Use: vibevision today`);
       return;
     }
     if (sub === "whoami") {
       const key = getApiKey(url);
-      if (!key) fail(`No API key stored for ${instanceKey(url)}. Run: vibevision auth login --instance ${url}`);
-      const base = url.replace(/\/+$/, "");
-      const verify = await fetch(`${base}/api/collections`, {
-        headers: { Authorization: key },
-        signal: AbortSignal.timeout(15_000)
-      }).catch((err: unknown) => {
-        throw new Error(`Cannot reach ${base}: ${err instanceof Error ? err.message : String(err)}`);
-      });
-      if (!verify.ok) fail(`API key rejected (${verify.status}). Re-run: vibevision auth login --instance ${url}`);
-      const cols = (await verify.json()) as { items?: Array<{ name: string }> };
-      const dataCols = (cols.items ?? []).filter((c) => !c.name.startsWith("_"));
-      console.log(`✓ ${instanceKey(url)} — API key valid (superuser). ${dataCols.length} data collections: ${dataCols.map((c) => c.name).join(", ")}`);
+      if (!key) fail(`No API token stored for ${instanceKey(url)}. Run: vibevision auth login --instance ${url} --token <vv_…>`);
+      initApi(url, key);
+      try {
+        await apiFetch("GET", "/v1/dashboard");
+      } catch {
+        fail(`API token rejected. Re-run: vibevision auth login --instance ${url} --token <vv_…>`);
+      }
+      console.log(`✓ ${instanceKey(url)} — API token valid.`);
       return;
     }
     if (sub === "logout") {
-      if (deleteApiKey(url)) console.log(`✓ Removed API key for ${instanceKey(url)}`);
-      else console.log(`No stored API key for ${instanceKey(url)}.`);
+      if (deleteApiKey(url)) console.log(`✓ Removed API token for ${instanceKey(url)}`);
+      else console.log(`No stored API token for ${instanceKey(url)}.`);
       return;
     }
     fail(`Unknown auth command "vibevision auth ${sub}". Try: login | whoami | logout`);
@@ -273,6 +259,12 @@ async function main(): Promise<void> {
         else if (sub === "done") await C.cmdLagDone(flags as C.Args, ctx);
         else fail("vibevision lag needs a subcommand: update | done");
         break;
+      case "tokens":
+        if (sub === "create") await C.cmdTokensCreate(flags as C.Args, ctx);
+        else if (sub === "ls") await C.cmdTokensLs(flags as C.Args, ctx);
+        else if (sub === "revoke") await C.cmdTokensRevoke(flags as C.Args, ctx);
+        else fail("vibevision tokens needs a subcommand: create | ls | revoke");
+        break;
       default:
         fail(`Unknown command "vibevision ${command}". Run: vibevision help`);
     }
@@ -292,19 +284,20 @@ main()
   .catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     const status = (err as { status?: number }).status;
-    if (status === 0 || /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|fetch failed/i.test(message)) {
+    if (status === 0 || /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|fetch failed|connection_failed/i.test(message)) {
       const where = lastConnectedInstance();
       fail(
-        `Cannot reach PocketBase${where ? ` at ${where}` : ""} — connection refused or timed out. ` +
+        `Cannot reach the API${where ? ` at ${where}` : ""} — connection refused or timed out. ` +
           `Is the instance running? (override: --instance <url> / VV_INSTANCE=<url>)`
       );
     }
     if (status && status >= 400) {
       const hint: Record<number, string> = {
         400: "Bad request — check the flags.",
-        403: "Forbidden — the API key lacks permission (or data rules are stricter than superuser).",
-        404: "Not found — check the id/slug or that the instance has been migrated (pnpm pb:migrate).",
-        422: "Validation error — a field failed the PocketBase schema (see message)."
+        401: "Unauthorized — token missing or rejected (vibevision auth login --token <vv_…>).",
+        403: "Forbidden — check the token.",
+        404: "Not found — check the id/slug.",
+        422: "Validation error — an unknown field was sent (see message)."
       };
       fail(`${message}${hint[status] ? ` (${hint[status]})` : ""}`);
     }
