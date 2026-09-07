@@ -1,4 +1,6 @@
 import { Body, Controller, Get, HttpCode, Post, Query } from '@nestjs/common';
+import { Auth } from '../auth/auth.decorator';
+import type { AuthContext } from '../auth/auth.types';
 import type { AppEvent, EventBody, EventListQuery } from './events.service';
 import { EventsService } from './events.service';
 
@@ -10,15 +12,19 @@ export class EventsController {
 
   @Get()
   list(
+    @Auth() auth: AuthContext,
     @Query()
     query: EventListQuery,
   ): { events: AppEvent[]; total: number; page: number; limit: number } {
-    return this.events.list(query ?? {});
+    return this.events.list(auth.userId, query ?? {});
   }
 
   @Post()
   @HttpCode(201)
-  record(@Body() body: EventBody): { event: AppEvent } {
-    return { event: this.events.record(body ?? {}) };
+  record(
+    @Auth() auth: AuthContext,
+    @Body() body: EventBody,
+  ): { event: AppEvent } {
+    return { event: this.events.record(auth.userId, body ?? {}) };
   }
 }

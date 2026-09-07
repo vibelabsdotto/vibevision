@@ -9,6 +9,8 @@ import {
   Put,
   Query,
 } from '@nestjs/common';
+import { Auth } from '../auth/auth.decorator';
+import type { AuthContext } from '../auth/auth.types';
 import type {
   WeeklyReview,
   WeeklyReviewBody,
@@ -23,6 +25,7 @@ export class WeeklyReviewsController {
 
   @Get()
   list(
+    @Auth() auth: AuthContext,
     @Query()
     query: WeeklyReviewListQuery,
   ): {
@@ -31,30 +34,40 @@ export class WeeklyReviewsController {
     page: number;
     limit: number;
   } {
-    return this.reviews.list(query ?? {});
+    return this.reviews.list(auth.userId, query ?? {});
   }
 
   @Get(':id')
-  get(@Param('id') id: string): { weekly_review: WeeklyReview } {
-    return { weekly_review: this.reviews.get(id) };
+  get(
+    @Auth() auth: AuthContext,
+    @Param('id') id: string,
+  ): { weekly_review: WeeklyReview } {
+    return { weekly_review: this.reviews.get(auth.userId, id) };
   }
 
   @Post()
   @HttpCode(201)
-  create(@Body() body: WeeklyReviewBody): { weekly_review: WeeklyReview } {
-    return { weekly_review: this.reviews.create(body ?? {}) };
+  create(
+    @Auth() auth: AuthContext,
+    @Body() body: WeeklyReviewBody,
+  ): { weekly_review: WeeklyReview } {
+    return { weekly_review: this.reviews.create(auth.userId, body ?? {}) };
   }
 
   @Put(':id')
   update(
+    @Auth() auth: AuthContext,
     @Param('id') id: string,
     @Body() body: WeeklyReviewBody,
   ): { weekly_review: WeeklyReview } {
-    return { weekly_review: this.reviews.update(id, body ?? {}) };
+    return { weekly_review: this.reviews.update(auth.userId, id, body ?? {}) };
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string): { ok: boolean } {
-    return this.reviews.remove(id);
+  remove(
+    @Auth() auth: AuthContext,
+    @Param('id') id: string,
+  ): { ok: boolean } {
+    return this.reviews.remove(auth.userId, id);
   }
 }

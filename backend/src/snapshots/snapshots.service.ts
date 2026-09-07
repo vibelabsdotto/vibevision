@@ -89,7 +89,7 @@ function capturedAtOrNow(v: unknown): string {
 export class SnapshotsService {
   constructor(private readonly database: DatabaseService) {}
 
-  list(query: SnapshotListQuery): {
+  list(userId: string, query: SnapshotListQuery): {
     snapshots: Snapshot[];
     total: number;
     page: number;
@@ -100,8 +100,8 @@ export class SnapshotsService {
     let sortCol = query.sort ?? 'created_at';
     if (!cols.has(sortCol)) sortCol = 'created_at';
 
-    const where: string[] = [];
-    const params: unknown[] = [];
+    const where: string[] = ['s.user_id = ?'];
+    const params: unknown[] = [userId];
     const cycleId = str(query.cycle_id);
     if (cycleId) {
       where.push('s.cycle_id = ?');
@@ -133,17 +133,17 @@ export class SnapshotsService {
     };
   }
 
-  get(id: string): Snapshot {
+  get(userId: string, id: string): Snapshot {
     const row = this.database.sqlite
-      .prepare('select * from week_snapshots where id = ?')
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare('select * from week_snapshots where id = ? and user_id = ?')
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!row) throw new NotFoundException('not_found');
     return rowToSnapshot(row);
   }
 
-  create(body: SnapshotBody): Snapshot {
+  create(userId: string, body: SnapshotBody): Snapshot {
     assertNoUnknown((body ?? {}) as Record<string, unknown>, CREATE_FIELDS);
-    const cycleId = this.requireCycle(body?.cycle_id);
+    const cycleId = this.requireCycle(userId, body?.cycle_id);
     const weekNumber = assertWeekNumber(body?.week_number);
     const snapshotJson = assertSnapshotJson(body?.snapshot_json);
     const capturedAt = capturedAtOrNow(body?.captured_at);
@@ -152,24 +152,24 @@ export class SnapshotsService {
     const id = newId();
     this.database.sqlite
       .prepare(
-        'insert into week_snapshots (id, cycle_id, week_number, snapshot_json, captured_at, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)',
+        'insert into week_snapshots (id, user_id, cycle_id, week_number, snapshot_json, captured_at, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
       )
-      .run(id, cycleId, weekNumber, snapshotJson, capturedAt, now, now);
-    return this.get(id);
+      .run(id, userId, cycleId, weekNumber, snapshotJson, capturedAt, now, now);
+    return this.get(userId, id);
   }
 
-  update(id: string, body: SnapshotBody): Snapshot {
+  update(userId: string, id: string, body: SnapshotBody): Snapshot {
     assertNoUnknown((body ?? {}) as Record<string, unknown>, UPDATE_FIELDS);
     const existing = this.database.sqlite
-      .prepare('select * from week_snapshots where id = ?')
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare('select * from week_snapshots where id = ? and user_id = ?')
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!existing) throw new NotFoundException('not_found');
 
     const sets: string[] = [];
     const params: unknown[] = [];
     if (body?.cycle_id !== undefined) {
       sets.push('cycle_id = ?');
-      params.push(this.requireCycle(body.cycle_id));
+      params.push(this.requireCycle(userId, body.cycle_id));
     }
     if (body?.week_number !== undefined) {
       sets.push('week_number = ?');
@@ -185,25 +185,25 @@ export class SnapshotsService {
     }
     sets.push('updated_at = ?');
     params.push(nowIso());
-    params.push(id);
+    params.push(id, userId);
     this.database.sqlite
-      .prepare(`update week_snapshots set ${sets.join(', ')} where id = ?`)
+      .prepare(`update week_snapshots set ${sets.join(', ')} where id = ? and user_id = ?`)
       .run(...params);
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  remove(id: string): { ok: boolean } {
+  remove(userId: string, id: string): { ok: boolean } {
     const existing = this.database.sqlite
-      .prepare('select id from week_snapshots where id = ?')
-      .get(id);
+      .prepare('select id from week_snapshots where id = ? and user_id = ?')
+      .get(id, userId);
     if (!existing) throw new NotFoundException('not_found');
     this.database.sqlite
-      .prepare('delete from week_snapshots where id = ?')
-      .run(id);
+      .prepare('delete from week_snapshots where id = ? and user_id = ?')
+      .run(id, userId);
     return { ok: true };
   }
 
-  private requireCycle(cycleId: unknown): string {
+  private requireCycle(userId: string, cycleId: unknown): string {
     const id = str(cycleId);
     if (!id)
       throw new BadRequestException({
@@ -211,8 +211,8 @@ export class SnapshotsService {
         message: 'cycle_id is required',
       });
     const row = this.database.sqlite
-      .prepare('select id from cycles where id = ?')
-      .get(id);
+      .prepare('select id from cycles where id = ? and user_id = ?')
+      .get(id, userId);
     if (!row)
       throw new BadRequestException({
         error: 'bad_request',

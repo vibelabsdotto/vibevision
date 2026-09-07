@@ -11,6 +11,8 @@ import {
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { Auth } from '../auth/auth.decorator';
+import type { AuthContext } from '../auth/auth.types';
 import type {
   TacticSchedule,
   TacticScheduleBody,
@@ -25,6 +27,7 @@ export class TacticSchedulesController {
 
   @Get()
   list(
+    @Auth() auth: AuthContext,
     @Query()
     query: TacticScheduleListQuery,
   ): {
@@ -33,21 +36,25 @@ export class TacticSchedulesController {
     page: number;
     limit: number;
   } {
-    return this.schedules.list(query ?? {});
+    return this.schedules.list(auth.userId, query ?? {});
   }
 
   @Get(':id')
-  get(@Param('id') id: string): { tactic_schedule: TacticSchedule } {
-    return { tactic_schedule: this.schedules.get(id) };
+  get(
+    @Auth() auth: AuthContext,
+    @Param('id') id: string,
+  ): { tactic_schedule: TacticSchedule } {
+    return { tactic_schedule: this.schedules.get(auth.userId, id) };
   }
 
   /** Upsert per (tactic_id, week_number): 201 on create, 200 on update. */
   @Post()
   upsert(
+    @Auth() auth: AuthContext,
     @Body() body: TacticScheduleBody,
     @Res({ passthrough: true }) res: Response,
   ): { tactic_schedule: TacticSchedule } {
-    const { schedule, created } = this.schedules.upsert(body ?? {});
+    const { schedule, created } = this.schedules.upsert(auth.userId, body ?? {});
     res.status(created ? 201 : 200);
     return { tactic_schedule: schedule };
   }
@@ -55,14 +62,18 @@ export class TacticSchedulesController {
   @Put(':id')
   @HttpCode(200)
   update(
+    @Auth() auth: AuthContext,
     @Param('id') id: string,
     @Body() body: TacticScheduleBody,
   ): { tactic_schedule: TacticSchedule } {
-    return { tactic_schedule: this.schedules.update(id, body ?? {}) };
+    return { tactic_schedule: this.schedules.update(auth.userId, id, body ?? {}) };
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string): { ok: boolean } {
-    return this.schedules.remove(id);
+  remove(
+    @Auth() auth: AuthContext,
+    @Param('id') id: string,
+  ): { ok: boolean } {
+    return this.schedules.remove(auth.userId, id);
   }
 }

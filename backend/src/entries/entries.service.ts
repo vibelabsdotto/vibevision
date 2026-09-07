@@ -93,13 +93,14 @@ export function dailyTarget(
   sqlite: Database.Database,
   bucket: TacticBucket,
   date: string,
+  userId: string,
 ): number {
   const rows = sqlite
     .prepare(
       `select planned_value from tactic_calendar_blocks
-       where tactic_id = ? and cycle_id = ? and week_number = ? and date = ?`,
+       where tactic_id = ? and cycle_id = ? and week_number = ? and date = ? and user_id = ?`,
     )
-    .all(bucket.tactic.id, bucket.cycleId, bucket.weekNumber, date) as Array<{
+    .all(bucket.tactic.id, bucket.cycleId, bucket.weekNumber, date, userId) as Array<{
     planned_value: number;
   }>;
   const scheduled = normalizeAmount(
@@ -122,14 +123,15 @@ export function actualForDate(
   sqlite: Database.Database,
   tacticId: string,
   date: string,
+  userId: string,
   excludeId?: string,
 ): number {
   const rows = sqlite
     .prepare(
-      `select value, completed from tactic_entries where tactic_id = ? and date = ?${excludeId ? ' and id != ?' : ''}`,
+      `select value, completed from tactic_entries where tactic_id = ? and date = ? and user_id = ?${excludeId ? ' and id != ?' : ''}`,
     )
     .all(
-      ...(excludeId ? [tacticId, date, excludeId] : [tacticId, date]),
+      ...(excludeId ? [tacticId, date, userId, excludeId] : [tacticId, date, userId]),
     ) as Array<{ value: number; completed: number }>;
   return normalizeAmount(
     rows.reduce((sum, row) => sum + entryCountValue(row, null), 0),
@@ -156,7 +158,7 @@ function entryCountValue(
 export class EntriesService {
   constructor(private readonly database: DatabaseService) {}
 
-  list(query: TacticEntryListQuery): {
+  list(userId: string, query: TacticEntryListQuery): {
     tactic_entries: TacticEntry[];
     total: number;
     page: number;
@@ -169,8 +171,8 @@ export class EntriesService {
     const sortOrder =
       query.sort === undefined && query.order === undefined ? 'desc' : order;
 
-    const where: string[] = [];
-    const params: unknown[] = [];
+    const where: string[] = ['e.user_id = ?'];
+    const params: unknown[] = [userId];
     if (search) {
       where.push('e.note LIKE ?');
       params.push(`%${search}%`);
@@ -232,27 +234,28 @@ export class EntriesService {
     };
   }
 
-  get(id: string): TacticEntry {
+  get(userId: string, id: string): TacticEntry {
     const row = this.database.sqlite
-      .prepare(`select ${COLUMNS} from tactic_entries where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from tactic_entries where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!row) throw new NotFoundException('not_found');
     return rowToEntry(row);
   }
 
-  create(body: TacticEntryBody): TacticEntry {
+  create(userId: string, body: TacticEntryBody): TacticEntry {
     assertNoUnknown((body ?? {}) as Record<string, unknown>, CREATE_FIELDS);
     const sqlite = this.database.sqlite;
-    const ctx = this.resolveWriteContext(sqlite, body ?? {}, null);
+    const ctx = this.resolveWriteContext(sqlite, userId, body ?? {}, null);
     const now = nowIso();
     const id = newId();
     sqlite
       .prepare(
-        `insert into tactic_entries (id, tactic_id, cycle_id, week_number, date, value, completed, note, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `insert into tactic_entries (id, user_id, tactic_id, cycle_id, week_number, date, value, completed, note, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
+        userId,
         ctx.tacticId,
         ctx.cycleId,
         ctx.weekNumber,
@@ -263,15 +266,15 @@ export class EntriesService {
         now,
         now,
       );
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  update(id: string, body: TacticEntryBody): TacticEntry {
+  update(userId: string, id: string, body: TacticEntryBody): TacticEntry {
     assertNoUnknown((body ?? {}) as Record<string, unknown>, UPDATE_FIELDS);
     const sqlite = this.database.sqlite;
     const existing = sqlite
-      .prepare(`select ${COLUMNS} from tactic_entries where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from tactic_entries where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!existing) throw new NotFoundException('not_found');
     const merged = { ...(body as Record<string, unknown>) };
     if (merged.date === undefined) merged.date = String(existing.date);
@@ -287,10 +290,10 @@ export class EntriesService {
         message: 'tactic_id is immutable (delete + recreate)',
       });
     }
-    const ctx = this.resolveWriteContext(sqlite, merged, id);
+    const ctx = this.resolveWriteContext(sqlite, userId, merged, id);
     sqlite
       .prepare(
-        'update tactic_entries set date = ?, value = ?, completed = ?, note = ?, week_number = ?, updated_at = ? where id = ?',
+        'update tactic_entries set date = ?, value = ?, completed = ?, note = ?, week_number = ?, updated_at = ? where id = ? and user_id = ?',
       )
       .run(
         ctx.date,
@@ -300,14 +303,15 @@ export class EntriesService {
         ctx.weekNumber,
         nowIso(),
         id,
+        userId,
       );
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  remove(id: string): { ok: boolean } {
+  remove(userId: string, id: string): { ok: boolean } {
     const existing = this.database.sqlite
-      .prepare('select value from tactic_entries where id = ?')
-      .get(id) as { value: number } | undefined;
+      .prepare('select value from tactic_entries where id = ? and user_id = ?')
+      .get(id, userId) as { value: number } | undefined;
     if (!existing) throw new NotFoundException('not_found');
     // Port of entryDeleteExecute: negative rows adjust other rows, never delete.
     if (normalizeAmount(Number(existing.value)) < 0) {
@@ -317,8 +321,8 @@ export class EntriesService {
       });
     }
     this.database.sqlite
-      .prepare('delete from tactic_entries where id = ?')
-      .run(id);
+      .prepare('delete from tactic_entries where id = ? and user_id = ?')
+      .run(id, userId);
     return { ok: true };
   }
 
@@ -326,7 +330,7 @@ export class EntriesService {
    * Undo the latest entry for a tactic+date (port of core undoLatestTacticEntry):
    * value > 1 → decrement, == 1 → delete, otherwise nothing to undo.
    */
-  undo(tacticId: string, date: string): { undone: string | null } {
+  undo(userId: string, tacticId: string, date: string): { undone: string | null } {
     if (!str(tacticId)) {
       throw new BadRequestException({
         error: 'bad_request',
@@ -341,17 +345,17 @@ export class EntriesService {
     }
     const latest = this.database.sqlite
       .prepare(
-        'select * from tactic_entries where tactic_id = ? and date = ? order by created_at desc, id desc limit 1',
+        'select * from tactic_entries where tactic_id = ? and date = ? and user_id = ? order by created_at desc, id desc limit 1',
       )
-      .get(str(tacticId), str(date)) as Record<string, unknown> | undefined;
+      .get(str(tacticId), str(date), userId) as Record<string, unknown> | undefined;
     if (!latest) return { undone: null };
     const latestValue = normalizeAmount(Number(latest.value));
     if (latestValue > 1) {
-      this.update(String(latest.id), {
+      this.update(userId, String(latest.id), {
         value: normalizeAmount(latestValue - 1),
       });
     } else if (Math.abs(latestValue - 1) < 1 / 1_000_000) {
-      this.remove(String(latest.id));
+      this.remove(userId, String(latest.id));
     } else {
       return { undone: null };
     }
@@ -364,6 +368,7 @@ export class EntriesService {
    */
   private resolveWriteContext(
     sqlite: Database.Database,
+    userId: string,
     body: TacticEntryBody,
     excludeId: string | null,
   ): {
@@ -391,8 +396,8 @@ export class EntriesService {
         message: 'date must be YYYY-MM-DD',
       });
     }
-    const { tactic, plan, style } = loadTacticWithPlan(sqlite, tacticId);
-    const bucket = resolveBucket(sqlite, tactic, date);
+    const { tactic, plan, style } = loadTacticWithPlan(sqlite, tacticId, userId);
+    const bucket = resolveBucket(sqlite, tactic, date, userId);
     if (body.cycle_id !== undefined && str(body.cycle_id) !== bucket.cycleId) {
       throw new BadRequestException({
         error: 'bad_request',
@@ -440,7 +445,7 @@ export class EntriesService {
       style === 'toggle' ? normalizeAmount(Number(body.value ?? 0)) : value;
 
     const before = normalizeAmount(
-      entryRows(sqlite, tacticId, date, excludeId, style).reduce(
+      entryRows(sqlite, tacticId, date, userId, excludeId, style).reduce(
         (sum, row) => sum + row,
         0,
       ),
@@ -455,7 +460,7 @@ export class EntriesService {
           : storedValue;
     const projected = normalizeAmount(before + counted);
     const target = normalizeAmount(
-      dailyTarget(sqlite, { tactic, plan, style, ...bucket }, date),
+      dailyTarget(sqlite, { tactic, plan, style, ...bucket }, date, userId),
     );
     if (projected < 0) {
       throw new BadRequestException({
@@ -497,6 +502,7 @@ function entryRows(
   sqlite: Database.Database,
   tacticId: string,
   date: string,
+  userId: string,
   excludeId: string | null,
   style: string,
 ): number[] {
@@ -504,14 +510,14 @@ function entryRows(
     excludeId
       ? sqlite
           .prepare(
-            'select value, completed from tactic_entries where tactic_id = ? and date = ? and id != ?',
+            'select value, completed from tactic_entries where tactic_id = ? and date = ? and user_id = ? and id != ?',
           )
-          .all(tacticId, date, excludeId)
+          .all(tacticId, date, userId, excludeId)
       : sqlite
           .prepare(
-            'select value, completed from tactic_entries where tactic_id = ? and date = ?',
+            'select value, completed from tactic_entries where tactic_id = ? and date = ? and user_id = ?',
           )
-          .all(tacticId, date)
+          .all(tacticId, date, userId)
   ) as Array<{ value: number; completed: number }>;
   return rows.map((row) => entryCountValue(row, style));
 }

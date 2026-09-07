@@ -109,7 +109,7 @@ function assertText(v: unknown, name: string): string {
 export class MonthlyReviewsService {
   constructor(private readonly database: DatabaseService) {}
 
-  list(query: MonthlyReviewListQuery): {
+  list(userId: string, query: MonthlyReviewListQuery): {
     monthly_reviews: MonthlyReview[];
     total: number;
     page: number;
@@ -122,8 +122,8 @@ export class MonthlyReviewsService {
     const sortOrder =
       query.sort === undefined && query.order === undefined ? 'asc' : order;
 
-    const where: string[] = [];
-    const params: unknown[] = [];
+    const where: string[] = ['r.user_id = ?'];
+    const params: unknown[] = [userId];
     if (search) {
       where.push('r.title LIKE ?');
       params.push(`%${search}%`);
@@ -154,15 +154,15 @@ export class MonthlyReviewsService {
     };
   }
 
-  get(id: string): MonthlyReview {
+  get(userId: string, id: string): MonthlyReview {
     const row = this.database.sqlite
-      .prepare(`select ${COLUMNS} from monthly_reviews where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from monthly_reviews where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!row) throw new NotFoundException('not_found');
     return rowToReview(row);
   }
 
-  create(body: MonthlyReviewBody): MonthlyReview {
+  create(userId: string, body: MonthlyReviewBody): MonthlyReview {
     assertNoUnknown((body ?? {}) as Record<string, unknown>);
     const cycleId = str(body?.cycle_id);
     if (!cycleId)
@@ -171,8 +171,8 @@ export class MonthlyReviewsService {
         message: 'cycle_id is required',
       });
     const cycle = this.database.sqlite
-      .prepare('select id from cycles where id = ?')
-      .get(cycleId);
+      .prepare('select id from cycles where id = ? and user_id = ?')
+      .get(cycleId, userId);
     if (!cycle)
       throw new BadRequestException({
         error: 'bad_request',
@@ -187,9 +187,9 @@ export class MonthlyReviewsService {
       });
     const dupe = this.database.sqlite
       .prepare(
-        'select id from monthly_reviews where cycle_id = ? and month_number = ?',
+        'select id from monthly_reviews where cycle_id = ? and month_number = ? and user_id = ?',
       )
-      .get(cycleId, monthNumber);
+      .get(cycleId, monthNumber, userId);
     if (dupe)
       throw new ConflictException({
         error: 'conflict',
@@ -199,10 +199,11 @@ export class MonthlyReviewsService {
     const id = newId();
     this.database.sqlite
       .prepare(
-        'insert into monthly_reviews (id, cycle_id, month_number, title, reflection, adjustments, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
+        'insert into monthly_reviews (id, user_id, cycle_id, month_number, title, reflection, adjustments, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
       .run(
         id,
+        userId,
         cycleId,
         monthNumber,
         title,
@@ -211,14 +212,14 @@ export class MonthlyReviewsService {
         now,
         now,
       );
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  update(id: string, body: MonthlyReviewBody): MonthlyReview {
+  update(userId: string, id: string, body: MonthlyReviewBody): MonthlyReview {
     assertNoUnknown((body ?? {}) as Record<string, unknown>);
     const existing = this.database.sqlite
-      .prepare(`select ${COLUMNS} from monthly_reviews where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from monthly_reviews where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!existing) throw new NotFoundException('not_found');
     if (
       (body?.cycle_id !== undefined &&
@@ -254,21 +255,21 @@ export class MonthlyReviewsService {
     }
     sets.push('updated_at = ?');
     params.push(nowIso());
-    params.push(id);
+    params.push(id, userId);
     this.database.sqlite
-      .prepare(`update monthly_reviews set ${sets.join(', ')} where id = ?`)
+      .prepare(`update monthly_reviews set ${sets.join(', ')} where id = ? and user_id = ?`)
       .run(...params);
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  remove(id: string): { ok: boolean } {
+  remove(userId: string, id: string): { ok: boolean } {
     const existing = this.database.sqlite
-      .prepare('select id from monthly_reviews where id = ?')
-      .get(id);
+      .prepare('select id from monthly_reviews where id = ? and user_id = ?')
+      .get(id, userId);
     if (!existing) throw new NotFoundException('not_found');
     this.database.sqlite
-      .prepare('delete from monthly_reviews where id = ?')
-      .run(id);
+      .prepare('delete from monthly_reviews where id = ? and user_id = ?')
+      .run(id, userId);
     return { ok: true };
   }
 }

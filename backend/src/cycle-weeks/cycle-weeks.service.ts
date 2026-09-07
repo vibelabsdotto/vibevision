@@ -57,7 +57,7 @@ function rowToWeek(row: Record<string, unknown>): CycleWeek {
 export class CycleWeeksService {
   constructor(private readonly database: DatabaseService) {}
 
-  list(query: CycleWeekListQuery): {
+  list(userId: string, query: CycleWeekListQuery): {
     cycle_weeks: CycleWeek[];
     total: number;
     page: number;
@@ -70,8 +70,8 @@ export class CycleWeeksService {
     const sortOrder =
       query.sort === undefined && query.order === undefined ? 'asc' : order;
 
-    const where: string[] = [];
-    const params: unknown[] = [];
+    const where: string[] = ['w.user_id = ?'];
+    const params: unknown[] = [userId];
     if (search) {
       where.push('w.label LIKE ?');
       params.push(`%${search}%`);
@@ -102,16 +102,16 @@ export class CycleWeeksService {
     };
   }
 
-  get(id: string): CycleWeek {
+  get(userId: string, id: string): CycleWeek {
     const row = this.database.sqlite
-      .prepare(`select ${COLUMNS} from cycle_weeks where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from cycle_weeks where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!row) throw new NotFoundException('not_found');
     return rowToWeek(row);
   }
 
   /** Weeks are created by POST /v1/cycles — only the label is editable. */
-  update(id: string, body: { label?: unknown }): CycleWeek {
+  update(userId: string, id: string, body: { label?: unknown }): CycleWeek {
     const unknown = Object.keys(body ?? {}).filter((k) => k !== 'label');
     if (unknown.length > 0) {
       throw new UnprocessableEntityException({
@@ -121,8 +121,8 @@ export class CycleWeeksService {
       });
     }
     const existing = this.database.sqlite
-      .prepare(`select ${COLUMNS} from cycle_weeks where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from cycle_weeks where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!existing) throw new NotFoundException('not_found');
     if (body?.label !== undefined) {
       const label = str(body.label);
@@ -133,10 +133,10 @@ export class CycleWeeksService {
         });
       this.database.sqlite
         .prepare(
-          'update cycle_weeks set label = ?, updated_at = ? where id = ?',
+          'update cycle_weeks set label = ?, updated_at = ? where id = ? and user_id = ?',
         )
-        .run(label, nowIso(), id);
+        .run(label, nowIso(), id, userId);
     }
-    return this.get(id);
+    return this.get(userId, id);
   }
 }

@@ -136,7 +136,7 @@ function optWeek(v: unknown, name: string): number | null {
 export class TacticsService {
   constructor(private readonly database: DatabaseService) {}
 
-  list(query: TacticListQuery): {
+  list(userId: string, query: TacticListQuery): {
     tactics: Tactic[];
     total: number;
     page: number;
@@ -149,8 +149,8 @@ export class TacticsService {
     const sortOrder =
       query.sort === undefined && query.order === undefined ? 'asc' : order;
 
-    const where: string[] = [];
-    const params: unknown[] = [];
+    const where: string[] = ['t.user_id = ?'];
+    const params: unknown[] = [userId];
     if (search) {
       where.push('t.title LIKE ?');
       params.push(`%${search}%`);
@@ -176,15 +176,15 @@ export class TacticsService {
     return { tactics: rows.map(rowToTactic), total: totalRow.n, page, limit };
   }
 
-  get(id: string): Tactic {
+  get(userId: string, id: string): Tactic {
     const row = this.database.sqlite
-      .prepare(`select ${COLUMNS} from tactics where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from tactics where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!row) throw new NotFoundException('not_found');
     return rowToTactic(row);
   }
 
-  create(body: TacticBody): Tactic {
+  create(userId: string, body: TacticBody): Tactic {
     assertNoUnknown((body ?? {}) as Record<string, unknown>);
     const goalId = str(body?.goal_id);
     if (!goalId)
@@ -193,8 +193,8 @@ export class TacticsService {
         message: 'goal_id is required',
       });
     const goal = this.database.sqlite
-      .prepare('select id from goals where id = ?')
-      .get(goalId);
+      .prepare('select id from goals where id = ? and user_id = ?')
+      .get(goalId, userId);
     if (!goal)
       throw new BadRequestException({
         error: 'bad_request',
@@ -218,13 +218,14 @@ export class TacticsService {
     const id = newId();
     this.database.sqlite
       .prepare(
-        `insert into tactics (id, goal_id, title, type, tracking_type, recurrence_type, execution_style,
+        `insert into tactics (id, user_id, goal_id, title, type, tracking_type, recurrence_type, execution_style,
           recurrence_count, target_value, unit, target_per_week, target_per_day, scoring_weight,
           starts_week, ends_week, active, sort_order, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
+        userId,
         goalId,
         title,
         validated.type,
@@ -244,14 +245,14 @@ export class TacticsService {
         now,
         now,
       );
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  update(id: string, body: TacticBody): Tactic {
+  update(userId: string, id: string, body: TacticBody): Tactic {
     assertNoUnknown((body ?? {}) as Record<string, unknown>);
     const existing = this.database.sqlite
-      .prepare(`select ${COLUMNS} from tactics where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from tactics where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!existing) throw new NotFoundException('not_found');
 
     const merged: Record<string, unknown> = { ...existing };
@@ -296,7 +297,7 @@ export class TacticsService {
       .prepare(
         `update tactics set title = ?, type = ?, tracking_type = ?, recurrence_type = ?, execution_style = ?,
           recurrence_count = ?, target_value = ?, unit = ?, target_per_week = ?, target_per_day = ?,
-          scoring_weight = ?, starts_week = ?, ends_week = ?, active = ?, sort_order = ?, updated_at = ? where id = ?`,
+          scoring_weight = ?, starts_week = ?, ends_week = ?, active = ?, sort_order = ?, updated_at = ? where id = ? and user_id = ?`,
       )
       .run(
         String(merged.title),
@@ -316,16 +317,19 @@ export class TacticsService {
         validated.sort_order,
         nowIso(),
         id,
+        userId,
       );
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  remove(id: string): { ok: boolean } {
+  remove(userId: string, id: string): { ok: boolean } {
     const existing = this.database.sqlite
-      .prepare('select id from tactics where id = ?')
-      .get(id);
+      .prepare('select id from tactics where id = ? and user_id = ?')
+      .get(id, userId);
     if (!existing) throw new NotFoundException('not_found');
-    this.database.sqlite.prepare('delete from tactics where id = ?').run(id);
+    this.database.sqlite
+      .prepare('delete from tactics where id = ? and user_id = ?')
+      .run(id, userId);
     return { ok: true };
   }
 
@@ -334,6 +338,7 @@ export class TacticsService {
    * avoids the dashboard fan-out; the entries API remains the write boundary.
    */
   todayState(
+    userId: string,
     id: string,
     dateParam?: string,
   ): {
@@ -353,17 +358,19 @@ export class TacticsService {
         message: 'date must be YYYY-MM-DD',
       });
     }
-    const tactic = this.get(id);
+    const tactic = this.get(userId, id);
     const setting = sqlite
-      .prepare("select value from settings where key = 'active_cycle_id'")
-      .get() as { value: string } | undefined;
+      .prepare(
+        "select value from settings where key = 'active_cycle_id' and user_id = ?",
+      )
+      .get(userId) as { value: string } | undefined;
     let cycleId: string | null = null;
     if (setting?.value) {
       const goal = sqlite
         .prepare(
-          `select g.cycle_id from goals g join tactics t on t.goal_id = g.id where t.id = ?`,
+          `select g.cycle_id from goals g join tactics t on t.goal_id = g.id where t.id = ? and t.user_id = ? and g.user_id = ?`,
         )
-        .get(id) as { cycle_id: string } | undefined;
+        .get(id, userId, userId) as { cycle_id: string } | undefined;
       if (goal?.cycle_id === setting.value) cycleId = goal.cycle_id;
     }
     if (!cycleId) {
@@ -371,17 +378,17 @@ export class TacticsService {
         .prepare(
           `select g.cycle_id from goals g join tactics t on t.goal_id = g.id
            join cycles c on c.id = g.cycle_id
-           where t.id = ? and c.status = 'active' order by c.start_date desc limit 1`,
+           where t.id = ? and t.user_id = ? and g.user_id = ? and c.user_id = ? and c.status = 'active' order by c.start_date desc limit 1`,
         )
-        .get(id) as { cycle_id: string } | undefined;
+        .get(id, userId, userId, userId) as { cycle_id: string } | undefined;
       if (!active) throw new NotFoundException('not_found');
       cycleId = active.cycle_id;
     }
     const weeks = sqlite
       .prepare(
-        'select week_number, start_date, end_date from cycle_weeks where cycle_id = ?',
+        'select week_number, start_date, end_date from cycle_weeks where cycle_id = ? and user_id = ?',
       )
-      .all(cycleId) as Array<{
+      .all(cycleId, userId) as Array<{
       week_number: number;
       start_date: string;
       end_date: string;
@@ -392,16 +399,16 @@ export class TacticsService {
     const { plan, style } = this.planOf(tactic);
     const schedule = sqlite
       .prepare(
-        'select planned_target, required from tactic_schedules where tactic_id = ? and week_number = ?',
+        'select planned_target, required from tactic_schedules where tactic_id = ? and week_number = ? and user_id = ?',
       )
-      .get(id, week.week_number) as
+      .get(id, week.week_number, userId) as
       { planned_target: number | null; required: number } | undefined;
     const blockRows = sqlite
       .prepare(
         `select planned_value from tactic_calendar_blocks
-         where cycle_id = ? and week_number = ? and tactic_id = ? and date = ?`,
+         where cycle_id = ? and week_number = ? and tactic_id = ? and date = ? and user_id = ?`,
       )
-      .all(cycleId, week.week_number, id, date) as Array<{
+      .all(cycleId, week.week_number, id, date, userId) as Array<{
       planned_value: number;
     }>;
     const scheduledTarget = normalizeAmount(
@@ -417,9 +424,9 @@ export class TacticsService {
     const entryRows = sqlite
       .prepare(
         `select value, completed from tactic_entries
-         where cycle_id = ? and week_number = ? and tactic_id = ? and date = ?`,
+         where cycle_id = ? and week_number = ? and tactic_id = ? and date = ? and user_id = ?`,
       )
-      .all(cycleId, week.week_number, id, date) as Array<{
+      .all(cycleId, week.week_number, id, date, userId) as Array<{
       value: number;
       completed: number;
     }>;

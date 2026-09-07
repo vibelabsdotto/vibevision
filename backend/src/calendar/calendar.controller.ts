@@ -1,4 +1,6 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Auth } from '../auth/auth.decorator';
+import type { AuthContext } from '../auth/auth.types';
 import type {
   CalendarBlockWithTitles,
   SchedulingItem,
@@ -12,6 +14,7 @@ export class CalendarController {
 
   @Get()
   get(
+    @Auth() auth: AuthContext,
     @Param('id') id: string,
     @Query('from') from: string,
     @Query('to') to: string,
@@ -20,6 +23,6 @@ export class CalendarController {
     scheduling: SchedulingItem[];
     current_week: number | null;
   } {
-    return this.calendar.getCalendar(id, from, to);
+    return this.calendar.getCalendar(auth.userId, id, from, to);
   }
 }

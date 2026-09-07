@@ -1,11 +1,11 @@
 import { Request } from 'express';
 
 /**
- * Single-workspace identity (contract §1): every authenticated identity
- * (session OR token) has full CRUD on all data. No user id, no ownership —
- * just the email for display/audit and the mechanism used.
+ * Per-user identity: every authenticated identity (session OR token) is
+ * bound to exactly one user id. Services scope all reads/writes with it.
  */
 export interface AuthContext {
+  userId: string;
   email: string;
   via: 'session' | 'token';
 }

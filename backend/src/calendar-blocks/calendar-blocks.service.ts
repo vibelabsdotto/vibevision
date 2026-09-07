@@ -168,7 +168,7 @@ export function deriveBlockTimes(input: {
 export class CalendarBlocksService {
   constructor(private readonly database: DatabaseService) {}
 
-  list(query: CalendarBlockListQuery): {
+  list(userId: string, query: CalendarBlockListQuery): {
     calendar_blocks: CalendarBlock[];
     total: number;
     page: number;
@@ -181,8 +181,8 @@ export class CalendarBlocksService {
     const sortOrder =
       query.sort === undefined && query.order === undefined ? 'asc' : order;
 
-    const where: string[] = [];
-    const params: unknown[] = [];
+    const where: string[] = ['b.user_id = ?'];
+    const params: unknown[] = [userId];
     if (search) {
       where.push('b.note LIKE ?');
       params.push(`%${search}%`);
@@ -229,15 +229,15 @@ export class CalendarBlocksService {
     };
   }
 
-  get(id: string): CalendarBlock {
+  get(userId: string, id: string): CalendarBlock {
     const row = this.database.sqlite
-      .prepare(`select ${COLUMNS} from tactic_calendar_blocks where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from tactic_calendar_blocks where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!row) throw new NotFoundException('not_found');
     return rowToBlock(row);
   }
 
-  create(body: CalendarBlockBody): CalendarBlock {
+  create(userId: string, body: CalendarBlockBody): CalendarBlock {
     assertNoUnknown((body ?? {}) as Record<string, unknown>, CREATE_FIELDS);
     const tacticId = str(body?.tactic_id);
     if (!tacticId)
@@ -253,8 +253,8 @@ export class CalendarBlocksService {
       });
     }
     const sqlite = this.database.sqlite;
-    const { tactic, plan, style } = loadTacticWithPlan(sqlite, tacticId);
-    const bucket = resolveBucket(sqlite, tactic, date);
+    const { tactic, plan, style } = loadTacticWithPlan(sqlite, tacticId, userId);
+    const bucket = resolveBucket(sqlite, tactic, date, userId);
     if (body?.cycle_id !== undefined && str(body.cycle_id) !== bucket.cycleId) {
       throw new BadRequestException({
         error: 'bad_request',
@@ -268,8 +268,9 @@ export class CalendarBlocksService {
       tacticId,
       bucket.cycleId,
       bucket.weekNumber,
+      userId,
     );
-    const target = weeklyTarget(sqlite, tacticId, bucket.weekNumber, plan);
+    const target = weeklyTarget(sqlite, tacticId, bucket.weekNumber, plan, userId);
     const remaining = normalizeAmount(Math.max(target - scheduled, 0));
     if (
       validated.planned_value > remaining &&
@@ -285,12 +286,13 @@ export class CalendarBlocksService {
     const id = newId();
     sqlite
       .prepare(
-        `insert into tactic_calendar_blocks (id, tactic_id, cycle_id, week_number, date, start_time, end_time,
+        `insert into tactic_calendar_blocks (id, user_id, tactic_id, cycle_id, week_number, date, start_time, end_time,
           duration_minutes, planned_value, note, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
+        userId,
         tacticId,
         bucket.cycleId,
         bucket.weekNumber,
@@ -303,15 +305,15 @@ export class CalendarBlocksService {
         now,
         now,
       );
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  update(id: string, body: CalendarBlockBody): CalendarBlock {
+  update(userId: string, id: string, body: CalendarBlockBody): CalendarBlock {
     assertNoUnknown((body ?? {}) as Record<string, unknown>, UPDATE_FIELDS);
     const sqlite = this.database.sqlite;
     const existing = sqlite
-      .prepare(`select ${COLUMNS} from tactic_calendar_blocks where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from tactic_calendar_blocks where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!existing) throw new NotFoundException('not_found');
 
     const date =
@@ -323,8 +325,8 @@ export class CalendarBlocksService {
       });
     }
     const tacticId = String(existing.tactic_id);
-    const { tactic, plan, style } = loadTacticWithPlan(sqlite, tacticId);
-    const bucket = resolveBucket(sqlite, tactic, date);
+    const { tactic, plan, style } = loadTacticWithPlan(sqlite, tacticId, userId);
+    const bucket = resolveBucket(sqlite, tactic, date, userId);
     const merged = { ...existing, ...(body as Record<string, unknown>), date };
     const validated = this.validateBlock(merged, plan, style);
 
@@ -333,9 +335,10 @@ export class CalendarBlocksService {
       tacticId,
       bucket.cycleId,
       bucket.weekNumber,
+      userId,
       id,
     );
-    const target = weeklyTarget(sqlite, tacticId, bucket.weekNumber, plan);
+    const target = weeklyTarget(sqlite, tacticId, bucket.weekNumber, plan, userId);
     const remaining = normalizeAmount(Math.max(target - scheduled, 0));
     if (
       validated.planned_value > remaining &&
@@ -350,7 +353,7 @@ export class CalendarBlocksService {
     sqlite
       .prepare(
         `update tactic_calendar_blocks set date = ?, start_time = ?, end_time = ?, duration_minutes = ?,
-          planned_value = ?, note = ?, week_number = ?, updated_at = ? where id = ?`,
+          planned_value = ?, note = ?, week_number = ?, updated_at = ? where id = ? and user_id = ?`,
       )
       .run(
         date,
@@ -362,18 +365,19 @@ export class CalendarBlocksService {
         bucket.weekNumber,
         nowIso(),
         id,
+        userId,
       );
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  remove(id: string): { ok: boolean } {
+  remove(userId: string, id: string): { ok: boolean } {
     const existing = this.database.sqlite
-      .prepare('select id from tactic_calendar_blocks where id = ?')
-      .get(id);
+      .prepare('select id from tactic_calendar_blocks where id = ? and user_id = ?')
+      .get(id, userId);
     if (!existing) throw new NotFoundException('not_found');
     this.database.sqlite
-      .prepare('delete from tactic_calendar_blocks where id = ?')
-      .run(id);
+      .prepare('delete from tactic_calendar_blocks where id = ? and user_id = ?')
+      .run(id, userId);
     return { ok: true };
   }
 
@@ -383,7 +387,7 @@ export class CalendarBlocksService {
    * The destination week's budget is re-validated; same-day multi-block
    * layouts are preserved (no destructive merge).
    */
-  move(body: {
+  move(userId: string, body: {
     block_id?: unknown;
     tactic_id?: unknown;
     from_date?: unknown;
@@ -401,8 +405,8 @@ export class CalendarBlocksService {
     const blockId = str(body?.block_id);
     if (blockId) {
       existing = sqlite
-        .prepare('select * from tactic_calendar_blocks where id = ?')
-        .get(blockId) as Record<string, unknown> | undefined;
+        .prepare('select * from tactic_calendar_blocks where id = ? and user_id = ?')
+        .get(blockId, userId) as Record<string, unknown> | undefined;
       if (!existing) throw new NotFoundException('not_found');
     } else {
       const tacticId = str(body?.tactic_id);
@@ -415,9 +419,9 @@ export class CalendarBlocksService {
       }
       const matches = sqlite
         .prepare(
-          'select * from tactic_calendar_blocks where tactic_id = ? and date = ? order by id asc',
+          'select * from tactic_calendar_blocks where tactic_id = ? and date = ? and user_id = ? order by id asc',
         )
-        .all(tacticId, fromDate) as Array<Record<string, unknown>>;
+        .all(tacticId, fromDate, userId) as Array<Record<string, unknown>>;
       if (matches.length === 0) {
         throw new NotFoundException('not_found');
       }
@@ -431,8 +435,8 @@ export class CalendarBlocksService {
     }
     const tacticId = String(existing.tactic_id);
     const cycleId = String(existing.cycle_id);
-    const { tactic, plan, style } = loadTacticWithPlan(sqlite, tacticId);
-    const bucket = resolveBucket(sqlite, tactic, toDate);
+    const { tactic, plan, style } = loadTacticWithPlan(sqlite, tacticId, userId);
+    const bucket = resolveBucket(sqlite, tactic, toDate, userId);
     if (bucket.cycleId !== cycleId) {
       throw new BadRequestException({
         error: 'bad_request',
@@ -452,9 +456,10 @@ export class CalendarBlocksService {
       tacticId,
       cycleId,
       bucket.weekNumber,
+      userId,
       String(existing.id),
     );
-    const target = weeklyTarget(sqlite, tacticId, bucket.weekNumber, plan);
+    const target = weeklyTarget(sqlite, tacticId, bucket.weekNumber, plan, userId);
     const remaining = normalizeAmount(Math.max(target - scheduled, 0));
     const value = normalizeAmount(Number(existing.planned_value));
     if (value > remaining && Math.abs(value - remaining) >= 1 / 1_000_000) {
@@ -465,13 +470,13 @@ export class CalendarBlocksService {
     }
     sqlite
       .prepare(
-        'update tactic_calendar_blocks set date = ?, week_number = ?, updated_at = ? where id = ?',
+        'update tactic_calendar_blocks set date = ?, week_number = ?, updated_at = ? where id = ? and user_id = ?',
       )
-      .run(toDate, bucket.weekNumber, nowIso(), String(existing.id));
+      .run(toDate, bucket.weekNumber, nowIso(), String(existing.id), userId);
     return {
       action: 'moved',
       source_block_id: String(existing.id),
-      block: this.get(String(existing.id)),
+      block: this.get(userId, String(existing.id)),
     };
   }
 

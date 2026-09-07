@@ -1,18 +1,33 @@
 import { DatabaseService } from '../database/database.service';
 import { EntriesService } from './entries.service';
 
+const USER_A = 'user-a';
+const USER_B = 'user-b';
+
 function seedTactic(
   db: DatabaseService,
   overrides: Record<string, unknown> = {},
 ): { tacticId: string; cycleId: string } {
+  const nowMs = Date.now();
   const now = new Date().toISOString();
+  for (const [id, email] of [
+    [USER_A, 'a@test.local'],
+    [USER_B, 'b@test.local'],
+  ] as const) {
+    db.sqlite
+      .prepare(
+        'insert into user (id, name, email, email_verified, created_at, updated_at) values (?, ?, ?, ?, ?, ?)',
+      )
+      .run(id, id, email, 0, nowMs, nowMs);
+  }
   const cycleId = 'cycle-1';
   db.sqlite
     .prepare(
-      'insert into cycles (id, slug, title, vision, start_date, end_date, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'insert into cycles (id, user_id, slug, title, vision, start_date, end_date, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     .run(
       cycleId,
+      USER_A,
       'c1',
       'C1',
       '',
@@ -27,10 +42,11 @@ function seedTactic(
     const end = new Date(Date.UTC(2026, 7, 31 + (w - 1) * 7 + 6));
     db.sqlite
       .prepare(
-        'insert into cycle_weeks (id, cycle_id, week_number, start_date, end_date, label, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
+        'insert into cycle_weeks (id, user_id, cycle_id, week_number, start_date, end_date, label, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
       .run(
         `w${w}`,
+        USER_A,
         cycleId,
         w,
         start.toISOString().slice(0, 10),
@@ -42,19 +58,20 @@ function seedTactic(
   }
   db.sqlite
     .prepare(
-      "insert into goals (id, cycle_id, title, description, sort_order, status, created_at, updated_at) values (?, ?, ?, ?, ?, 'in_progress', ?, ?)",
+      "insert into goals (id, user_id, cycle_id, title, description, sort_order, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, 'in_progress', ?, ?)",
     )
-    .run('goal-1', cycleId, 'G1', '', 0, now, now);
+    .run('goal-1', USER_A, cycleId, 'G1', '', 0, now, now);
   const tacticId = 'tactic-1';
   db.sqlite
     .prepare(
-      `insert into tactics (id, goal_id, title, type, tracking_type, recurrence_type, execution_style,
+      `insert into tactics (id, user_id, goal_id, title, type, tracking_type, recurrence_type, execution_style,
         recurrence_count, target_value, unit, target_per_week, target_per_day, scoring_weight,
         starts_week, ends_week, active, sort_order, created_at, updated_at)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       tacticId,
+      USER_A,
       'goal-1',
       'T1',
       (overrides.type as string) ?? 'habit',
@@ -91,7 +108,7 @@ function setup(overrides: Record<string, unknown> = {}): {
 describe('EntriesService', () => {
   it('logs a daily entry and caps at the daily target', () => {
     const { entries, tacticId } = setup();
-    const first = entries.create({
+    const first = entries.create(USER_A, {
       tactic_id: tacticId,
       date: '2026-09-02',
       value: 1,
@@ -99,7 +116,7 @@ describe('EntriesService', () => {
     expect(first.value).toBe(1);
     expect(first.week_number).toBe(1);
     expect(() =>
-      entries.create({ tactic_id: tacticId, date: '2026-09-02', value: 1 }),
+      entries.create(USER_A, { tactic_id: tacticId, date: '2026-09-02', value: 1 }),
     ).toThrow(/remain for this date/);
   });
 
@@ -111,9 +128,9 @@ describe('EntriesService', () => {
       target_value: 1,
     });
     expect(() =>
-      entries.create({ tactic_id: tacticId, date: '2026-09-02', value: 0 }),
+      entries.create(USER_A, { tactic_id: tacticId, date: '2026-09-02', value: 0 }),
     ).toThrow(/Invalid tactic entry value/);
-    const done = entries.create({
+    const done = entries.create(USER_A, {
       tactic_id: tacticId,
       date: '2026-09-02',
       completed: true,
@@ -129,14 +146,14 @@ describe('EntriesService', () => {
       target_value: 1,
     });
     expect(() =>
-      entries.create({ tactic_id: tacticId, date: '2026-09-02', value: 1.5 }),
+      entries.create(USER_A, { tactic_id: tacticId, date: '2026-09-02', value: 1.5 }),
     ).toThrow(/whole number/);
   });
 
   it('rejects forged buckets and out-of-cycle dates', () => {
     const { entries, tacticId, cycleId } = setup();
     expect(() =>
-      entries.create({
+      entries.create(USER_A, {
         tactic_id: tacticId,
         cycle_id: 'forged',
         date: '2026-09-02',
@@ -145,26 +162,53 @@ describe('EntriesService', () => {
     ).toThrow(/cycle does not match/);
     expect(cycleId).toBe('cycle-1');
     expect(() =>
-      entries.create({ tactic_id: tacticId, date: '2027-05-05', value: 1 }),
+      entries.create(USER_A, { tactic_id: tacticId, date: '2027-05-05', value: 1 }),
     ).toThrow(/not inside the tactic cycle/);
   });
 
   it('refuses to delete negative rows', () => {
     const { entries, tacticId } = setup({ target_value: 5 });
-    entries.create({ tactic_id: tacticId, date: '2026-09-02', value: 3 });
-    const neg = entries.create({
+    entries.create(USER_A, { tactic_id: tacticId, date: '2026-09-02', value: 3 });
+    const neg = entries.create(USER_A, {
       tactic_id: tacticId,
       date: '2026-09-02',
       value: -1,
     });
     expect(neg.value).toBe(-1);
-    expect(() => entries.remove(neg.id)).toThrow(/cannot be deleted directly/);
+    expect(() => entries.remove(USER_A, neg.id)).toThrow(/cannot be deleted directly/);
   });
 
   it('rejects entries that would drive the day below zero', () => {
     const { entries, tacticId } = setup();
     expect(() =>
-      entries.create({ tactic_id: tacticId, date: '2026-09-02', value: -1 }),
+      entries.create(USER_A, { tactic_id: tacticId, date: '2026-09-02', value: -1 }),
     ).toThrow(/cannot be negative/);
+  });
+
+  it('isolates entries per user (controller: GET/LIST/PUT/DELETE/log/undo)', () => {
+    const { entries, tacticId } = setup();
+    const owned = entries.create(USER_A, {
+      tactic_id: tacticId,
+      date: '2026-09-02',
+      value: 1,
+    });
+    expect(entries.list(USER_B, {}).total).toBe(0);
+    expect(() => entries.get(USER_B, owned.id)).toThrow(/404|not_found/i);
+    expect(() => entries.update(USER_B, owned.id, { note: 'x' })).toThrow(
+      /404|not_found/i,
+    );
+    expect(() => entries.remove(USER_B, owned.id)).toThrow(/404|not_found/i);
+    expect(entries.undo(USER_B, tacticId, '2026-09-02')).toEqual({
+      undone: null,
+    });
+    expect(() =>
+      entries.create(USER_B, {
+        tactic_id: tacticId,
+        date: '2026-09-03',
+        value: 1,
+      }),
+    ).toThrow(/unknown tactic_id/);
+    // caps are per user: B has no rows, so B's own tactic would start at 0
+    expect(entries.list(USER_A, {}).total).toBe(1);
   });
 });

@@ -11,12 +11,18 @@ import { account, session, user, verification } from './auth-schema';
 // Contract §2: VibeVision tables. Ids are UUID v4 generated in the app layer.
 // Timestamps are ISO-8601 strings written by the app. Booleans are INTEGER
 // 0/1. Amounts are REAL, normalized to 1e-6 by the service layer.
+//
+// Per-user isolation: every domain table carries `user_id` (FK → user.id,
+// cascade delete). Slugs/keys are unique per user, not globally.
 
 export const cycles = sqliteTable(
   'cycles',
   {
     id: text('id').primaryKey(),
-    slug: text('slug').notNull().unique(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    slug: text('slug').notNull(),
     title: text('title').notNull(),
     vision: text('vision').notNull().default(''),
     startDate: text('start_date').notNull(),
@@ -26,13 +32,19 @@ export const cycles = sqliteTable(
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
-  (table) => [uniqueIndex('idx_cycles_slug').on(table.slug)],
+  (table) => [
+    uniqueIndex('idx_cycles_slug').on(table.slug, table.userId),
+    index('idx_cycles_user').on(table.userId),
+  ],
 );
 
 export const cycleWeeks = sqliteTable(
   'cycle_weeks',
   {
     id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
     cycleId: text('cycle_id')
       .notNull()
       .references(() => cycles.id, { onDelete: 'cascade' }),
@@ -48,6 +60,7 @@ export const cycleWeeks = sqliteTable(
       table.cycleId,
       table.weekNumber,
     ),
+    index('idx_cycle_weeks_user').on(table.userId),
   ],
 );
 
@@ -55,6 +68,9 @@ export const goals = sqliteTable(
   'goals',
   {
     id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
     cycleId: text('cycle_id')
       .notNull()
       .references(() => cycles.id, { onDelete: 'cascade' }),
@@ -65,13 +81,19 @@ export const goals = sqliteTable(
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
-  (table) => [index('idx_goals_cycle').on(table.cycleId)],
+  (table) => [
+    index('idx_goals_cycle').on(table.cycleId),
+    index('idx_goals_user').on(table.userId),
+  ],
 );
 
 export const lagIndicators = sqliteTable(
   'lag_indicators',
   {
     id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
     goalId: text('goal_id')
       .notNull()
       .references(() => goals.id, { onDelete: 'cascade' }),
@@ -85,13 +107,19 @@ export const lagIndicators = sqliteTable(
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
-  (table) => [index('idx_lags_goal').on(table.goalId)],
+  (table) => [
+    index('idx_lags_goal').on(table.goalId),
+    index('idx_lag_indicators_user').on(table.userId),
+  ],
 );
 
 export const tactics = sqliteTable(
   'tactics',
   {
     id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
     goalId: text('goal_id')
       .notNull()
       .references(() => goals.id, { onDelete: 'cascade' }),
@@ -114,13 +142,19 @@ export const tactics = sqliteTable(
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
-  (table) => [index('idx_tactics_goal').on(table.goalId)],
+  (table) => [
+    index('idx_tactics_goal').on(table.goalId),
+    index('idx_tactics_user').on(table.userId),
+  ],
 );
 
 export const tacticSchedules = sqliteTable(
   'tactic_schedules',
   {
     id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
     tacticId: text('tactic_id')
       .notNull()
       .references(() => tactics.id, { onDelete: 'cascade' }),
@@ -135,6 +169,7 @@ export const tacticSchedules = sqliteTable(
       table.tacticId,
       table.weekNumber,
     ),
+    index('idx_tactic_schedules_user').on(table.userId),
   ],
 );
 
@@ -142,6 +177,9 @@ export const tacticCalendarBlocks = sqliteTable(
   'tactic_calendar_blocks',
   {
     id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
     tacticId: text('tactic_id')
       .notNull()
       .references(() => tactics.id, { onDelete: 'cascade' }),
@@ -160,6 +198,7 @@ export const tacticCalendarBlocks = sqliteTable(
   },
   (table) => [
     index('idx_blocks_cycle_week').on(table.cycleId, table.weekNumber),
+    index('idx_tactic_calendar_blocks_user').on(table.userId),
   ],
 );
 
@@ -167,6 +206,9 @@ export const dailyLogs = sqliteTable(
   'daily_logs',
   {
     id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
     cycleId: text('cycle_id')
       .notNull()
       .references(() => cycles.id, { onDelete: 'cascade' }),
@@ -186,6 +228,7 @@ export const dailyLogs = sqliteTable(
   },
   (table) => [
     uniqueIndex('idx_daily_logs_cycle_date').on(table.cycleId, table.date),
+    index('idx_daily_logs_user').on(table.userId),
   ],
 );
 
@@ -193,6 +236,9 @@ export const tacticEntries = sqliteTable(
   'tactic_entries',
   {
     id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
     tacticId: text('tactic_id')
       .notNull()
       .references(() => tactics.id, { onDelete: 'cascade' }),
@@ -209,6 +255,7 @@ export const tacticEntries = sqliteTable(
   },
   (table) => [
     index('idx_tactic_entries_cycle_week').on(table.cycleId, table.weekNumber),
+    index('idx_tactic_entries_user').on(table.userId),
   ],
 );
 
@@ -216,6 +263,9 @@ export const weekSnapshots = sqliteTable(
   'week_snapshots',
   {
     id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
     cycleId: text('cycle_id')
       .notNull()
       .references(() => cycles.id, { onDelete: 'cascade' }),
@@ -227,6 +277,7 @@ export const weekSnapshots = sqliteTable(
   },
   (table) => [
     index('idx_week_snapshots_cycle_week').on(table.cycleId, table.weekNumber),
+    index('idx_week_snapshots_user').on(table.userId),
   ],
 );
 
@@ -234,6 +285,9 @@ export const weeklyReviews = sqliteTable(
   'weekly_reviews',
   {
     id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
     cycleId: text('cycle_id')
       .notNull()
       .references(() => cycles.id, { onDelete: 'cascade' }),
@@ -254,6 +308,7 @@ export const weeklyReviews = sqliteTable(
       table.cycleId,
       table.weekNumber,
     ),
+    index('idx_weekly_reviews_user').on(table.userId),
   ],
 );
 
@@ -261,6 +316,9 @@ export const monthlyReviews = sqliteTable(
   'monthly_reviews',
   {
     id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
     cycleId: text('cycle_id')
       .notNull()
       .references(() => cycles.id, { onDelete: 'cascade' }),
@@ -276,6 +334,7 @@ export const monthlyReviews = sqliteTable(
       table.cycleId,
       table.monthNumber,
     ),
+    index('idx_monthly_reviews_user').on(table.userId),
   ],
 );
 
@@ -283,6 +342,9 @@ export const events = sqliteTable(
   'events',
   {
     id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
     cycleId: text('cycle_id').references(() => cycles.id, {
       onDelete: 'cascade',
     }),
@@ -290,32 +352,49 @@ export const events = sqliteTable(
     payloadJson: text('payload_json').notNull().default('{}'),
     createdAt: text('created_at').notNull(),
   },
-  (table) => [index('idx_events_cycle').on(table.cycleId)],
+  (table) => [
+    index('idx_events_cycle').on(table.cycleId),
+    index('idx_events_user').on(table.userId),
+  ],
 );
 
 export const settings = sqliteTable(
   'settings',
   {
     id: text('id').primaryKey(),
-    key: text('key').notNull().unique(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
     value: text('value').notNull(),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
-  (table) => [uniqueIndex('idx_settings_key').on(table.key)],
+  (table) => [
+    uniqueIndex('idx_settings_key').on(table.key, table.userId),
+    index('idx_settings_user').on(table.userId),
+  ],
 );
 
-// Personal access tokens for the CLI. Single-workspace (contract §1): no
-// owner_id — every authenticated identity has full CRUD on all data.
-export const apiTokens = sqliteTable('api_tokens', {
-  id: text('id').primaryKey(),
-  ownerEmail: text('owner_email').notNull(),
-  name: text('name').notNull(),
-  tokenHash: text('token_hash').notNull().unique(),
-  prefix: text('prefix').notNull(),
-  createdAt: text('created_at').notNull(),
-  lastUsedAt: text('last_used_at'),
-});
+// Personal access tokens for the CLI. Per-user (like all domain tables):
+// each token is owned by exactly one user id; tokenHash stays globally
+// UNIQUE because hashes are random and must resolve unambiguously.
+export const apiTokens = sqliteTable(
+  'api_tokens',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    ownerEmail: text('owner_email').notNull(),
+    name: text('name').notNull(),
+    tokenHash: text('token_hash').notNull().unique(),
+    prefix: text('prefix').notNull(),
+    createdAt: text('created_at').notNull(),
+    lastUsedAt: text('last_used_at'),
+  },
+  (table) => [index('idx_api_tokens_user').on(table.userId)],
+);
 
 // Better Auth core tables (user/session/account/verification).
 export * from './auth-schema';

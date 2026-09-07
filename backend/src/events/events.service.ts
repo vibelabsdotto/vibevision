@@ -50,7 +50,7 @@ function rowToEvent(row: Record<string, unknown>): AppEvent {
 export class EventsService {
   constructor(private readonly database: DatabaseService) {}
 
-  list(query: EventListQuery): {
+  list(userId: string, query: EventListQuery): {
     events: AppEvent[];
     total: number;
     page: number;
@@ -63,8 +63,8 @@ export class EventsService {
     const sortOrder =
       query.sort === undefined && query.order === undefined ? 'desc' : order;
 
-    const where: string[] = [];
-    const params: unknown[] = [];
+    const where: string[] = ['e.user_id = ?'];
+    const params: unknown[] = [userId];
     if (search) {
       where.push('e.type LIKE ?');
       params.push(`%${search}%`);
@@ -90,7 +90,7 @@ export class EventsService {
     return { events: rows.map(rowToEvent), total: totalRow.n, page, limit };
   }
 
-  record(body: EventBody): AppEvent {
+  record(userId: string, body: EventBody): AppEvent {
     const unknown = Object.keys(body ?? {}).filter(
       (k) => !['cycle_id', 'type', 'payload_json'].includes(k),
     );
@@ -115,8 +115,8 @@ export class EventsService {
         : str(body.cycle_id);
     if (cycleId) {
       const cycle = this.database.sqlite
-        .prepare('select id from cycles where id = ?')
-        .get(cycleId);
+        .prepare('select id from cycles where id = ? and user_id = ?')
+        .get(cycleId, userId);
       if (!cycle)
         throw new BadRequestException({
           error: 'bad_request',
@@ -148,9 +148,9 @@ export class EventsService {
     const id = newId();
     this.database.sqlite
       .prepare(
-        'insert into events (id, cycle_id, type, payload_json, created_at) values (?, ?, ?, ?, ?)',
+        'insert into events (id, user_id, cycle_id, type, payload_json, created_at) values (?, ?, ?, ?, ?, ?)',
       )
-      .run(id, cycleId, type, payload, now);
+      .run(id, userId, cycleId, type, payload, now);
     return {
       id,
       cycle_id: cycleId,

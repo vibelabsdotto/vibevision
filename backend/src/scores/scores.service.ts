@@ -90,7 +90,7 @@ export interface WeekSnapshotDoc {
 export class ScoresService {
   constructor(private readonly database: DatabaseService) {}
 
-  weeksOf(cycleId: string): Array<{
+  weeksOf(cycleId: string, userId: string): Array<{
     id: string;
     week_number: number;
     start_date: string;
@@ -99,9 +99,9 @@ export class ScoresService {
   }> {
     return this.database.sqlite
       .prepare(
-        'select id, week_number, start_date, end_date, label from cycle_weeks where cycle_id = ? order by week_number asc',
+        'select id, week_number, start_date, end_date, label from cycle_weeks where cycle_id = ? and user_id = ? order by week_number asc',
       )
-      .all(cycleId) as Array<{
+      .all(cycleId, userId) as Array<{
       id: string;
       week_number: number;
       start_date: string;
@@ -110,18 +110,18 @@ export class ScoresService {
     }>;
   }
 
-  currentWeek(cycleId: string, date: string): number | null {
-    return currentWeekNumber(this.weeksOf(cycleId), date);
+  currentWeek(cycleId: string, userId: string, date: string): number | null {
+    return currentWeekNumber(this.weeksOf(cycleId, userId), date);
   }
 
-  tacticRows(cycleId: string): ScoreTacticRow[] {
+  tacticRows(cycleId: string, userId: string): ScoreTacticRow[] {
     const rows = this.database.sqlite
       .prepare(
         `select t.*, g.title as goal_title, g.sort_order as goal_sort
          from tactics t join goals g on g.id = t.goal_id
-         where g.cycle_id = ? order by g.sort_order asc, t.sort_order asc, t.id asc`,
+         where g.cycle_id = ? and g.user_id = ? and t.user_id = ? order by g.sort_order asc, t.sort_order asc, t.id asc`,
       )
-      .all(cycleId) as Array<Record<string, unknown>>;
+      .all(cycleId, userId, userId) as Array<Record<string, unknown>>;
     return rows.map((row) => ({
       tactic: {
         id: String(row.id),
@@ -146,19 +146,19 @@ export class ScoresService {
     }));
   }
 
-  scheduleRows(weekNumber?: number): ScoreScheduleRow[] {
+  scheduleRows(userId: string, weekNumber?: number): ScoreScheduleRow[] {
     const rows = (
       weekNumber === undefined
         ? this.database.sqlite
             .prepare(
-              'select tactic_id, week_number, planned_target, required from tactic_schedules',
+              'select tactic_id, week_number, planned_target, required from tactic_schedules where user_id = ?',
             )
-            .all()
+            .all(userId)
         : this.database.sqlite
             .prepare(
-              'select tactic_id, week_number, planned_target, required from tactic_schedules where week_number = ?',
+              'select tactic_id, week_number, planned_target, required from tactic_schedules where week_number = ? and user_id = ?',
             )
-            .all(weekNumber)
+            .all(weekNumber, userId)
     ) as Array<{
       tactic_id: string;
       week_number: number;
@@ -173,12 +173,12 @@ export class ScoresService {
     }));
   }
 
-  blockRows(cycleId: string, weekNumber: number): ScoreBlockRow[] {
+  blockRows(cycleId: string, userId: string, weekNumber: number): ScoreBlockRow[] {
     const rows = this.database.sqlite
       .prepare(
-        'select tactic_id, date, planned_value from tactic_calendar_blocks where cycle_id = ? and week_number = ? order by date asc',
+        'select tactic_id, date, planned_value from tactic_calendar_blocks where cycle_id = ? and user_id = ? and week_number = ? order by date asc',
       )
-      .all(cycleId, weekNumber) as Array<{
+      .all(cycleId, userId, weekNumber) as Array<{
       tactic_id: string;
       date: string;
       planned_value: number;
@@ -190,19 +190,19 @@ export class ScoresService {
     }));
   }
 
-  entryValues(cycleId: string, weekNumber?: number): ScoreEntry[] {
+  entryValues(cycleId: string, userId: string, weekNumber?: number): ScoreEntry[] {
     const rows = (
       weekNumber === undefined
         ? this.database.sqlite
             .prepare(
-              'select tactic_id, date, value, completed from tactic_entries where cycle_id = ?',
+              'select tactic_id, date, value, completed from tactic_entries where cycle_id = ? and user_id = ?',
             )
-            .all(cycleId)
+            .all(cycleId, userId)
         : this.database.sqlite
             .prepare(
-              'select tactic_id, date, value, completed from tactic_entries where cycle_id = ? and week_number = ?',
+              'select tactic_id, date, value, completed from tactic_entries where cycle_id = ? and user_id = ? and week_number = ?',
             )
-            .all(cycleId, weekNumber)
+            .all(cycleId, userId, weekNumber)
     ) as Array<{
       tactic_id: string;
       date: string;
@@ -219,13 +219,14 @@ export class ScoresService {
 
   latestSnapshot(
     cycleId: string,
+    userId: string,
     weekNumber: number,
   ): { id: string; snapshot: WeekSnapshotDoc } | null {
     const row = this.database.sqlite
       .prepare(
-        'select id, snapshot_json from week_snapshots where cycle_id = ? and week_number = ? order by created_at desc limit 1',
+        'select id, snapshot_json from week_snapshots where cycle_id = ? and user_id = ? and week_number = ? order by created_at desc limit 1',
       )
-      .get(cycleId, weekNumber) as
+      .get(cycleId, userId, weekNumber) as
       { id: string; snapshot_json: string } | undefined;
     if (!row) return null;
     return {
@@ -235,21 +236,22 @@ export class ScoresService {
   }
 
   getWeekScore(
+    userId: string,
     cycleId: string,
     weekNumber: number,
     options?: { as_of_date?: string; include_as_of_date?: boolean },
   ): WeekScore {
     const cycle = this.database.sqlite
-      .prepare('select id from cycles where id = ?')
-      .get(cycleId);
+      .prepare('select id from cycles where id = ? and user_id = ?')
+      .get(cycleId, userId);
     if (!cycle) throw new NotFoundException('not_found');
-    const weeks = this.weeksOf(cycleId);
+    const weeks = this.weeksOf(cycleId, userId);
     const week = weeks.find((w) => w.week_number === weekNumber);
     if (!week) throw new NotFoundException('not_found');
     const asOfDate =
       options?.as_of_date ?? new Date().toISOString().slice(0, 10);
 
-    const snapshot = this.latestSnapshot(cycleId, weekNumber);
+    const snapshot = this.latestSnapshot(cycleId, userId, weekNumber);
     let tacticRows: ScoreTacticRow[];
     let scheduleRows: ScoreScheduleRow[];
     let blocks: ScoreBlockRow[];
@@ -268,11 +270,11 @@ export class ScoresService {
         planned_value: block.planned_value,
       }));
     } else {
-      tacticRows = this.tacticRows(cycleId);
-      scheduleRows = this.scheduleRows(weekNumber);
-      blocks = this.blockRows(cycleId, weekNumber);
+      tacticRows = this.tacticRows(cycleId, userId);
+      scheduleRows = this.scheduleRows(userId, weekNumber);
+      blocks = this.blockRows(cycleId, userId, weekNumber);
     }
-    const entries = this.entryValues(cycleId, weekNumber);
+    const entries = this.entryValues(cycleId, userId, weekNumber);
     const scores = scoreTacticsForWeek({
       week_number: weekNumber,
       as_of_date: asOfDate,
@@ -289,24 +291,29 @@ export class ScoresService {
   }
 
   getOverallScore(
+    userId: string,
     cycleId: string,
     currentWeek: number,
   ): { score: number; status: string; weeks_scored: number } {
-    const weeks = this.weeksOf(cycleId).filter(
+    const cycle = this.database.sqlite
+      .prepare('select id from cycles where id = ? and user_id = ?')
+      .get(cycleId, userId);
+    if (!cycle) throw new NotFoundException('not_found');
+    const weeks = this.weeksOf(cycleId, userId).filter(
       (week) => week.week_number <= currentWeek,
     );
     if (weeks.length === 0) {
       return { score: 0, status: 'off_track', weeks_scored: 0 };
     }
     const asOfDate = new Date().toISOString().slice(0, 10);
-    const tacticRows = this.tacticRows(cycleId);
-    const scheduleRows = this.scheduleRows();
+    const tacticRows = this.tacticRows(cycleId, userId);
+    const scheduleRows = this.scheduleRows(userId);
     // regroup entries per week via their stored week_number
     const rawEntries = this.database.sqlite
       .prepare(
-        'select tactic_id, date, value, completed, week_number from tactic_entries where cycle_id = ?',
+        'select tactic_id, date, value, completed, week_number from tactic_entries where cycle_id = ? and user_id = ?',
       )
-      .all(cycleId) as Array<{
+      .all(cycleId, userId) as Array<{
       tactic_id: string;
       date: string;
       value: number;
@@ -355,14 +362,15 @@ export class ScoresService {
 
   /** Freeze the current week state into a snapshot row (port of captureWeekSnapshot). */
   captureSnapshot(
+    userId: string,
     cycleId: string,
     weekNumber: number,
   ): { id: string; snapshot: WeekSnapshotDoc } {
     const cycle = this.database.sqlite
-      .prepare('select id from cycles where id = ?')
-      .get(cycleId);
+      .prepare('select id from cycles where id = ? and user_id = ?')
+      .get(cycleId, userId);
     if (!cycle) throw new NotFoundException('not_found');
-    const weeks = this.weeksOf(cycleId);
+    const weeks = this.weeksOf(cycleId, userId);
     const week = weeks.find((w) => w.week_number === weekNumber);
     if (!week)
       throw new BadRequestException({
@@ -372,9 +380,9 @@ export class ScoresService {
 
     const goalRows = this.database.sqlite
       .prepare(
-        'select id, title, description, sort_order, status from goals where cycle_id = ? order by sort_order asc',
+        'select id, title, description, sort_order, status from goals where cycle_id = ? and user_id = ? order by sort_order asc',
       )
-      .all(cycleId) as Array<{
+      .all(cycleId, userId) as Array<{
       id: string;
       title: string;
       description: string;
@@ -384,9 +392,9 @@ export class ScoresService {
     const lagRows = this.database.sqlite
       .prepare(
         `select l.id, l.goal_id, l.title, l.type, l.target_value, l.current_value, l.unit, l.achieved, l.sort_order
-         from lag_indicators l join goals g on g.id = l.goal_id where g.cycle_id = ?`,
+         from lag_indicators l join goals g on g.id = l.goal_id where g.cycle_id = ? and g.user_id = ? and l.user_id = ?`,
       )
-      .all(cycleId) as Array<{
+      .all(cycleId, userId, userId) as Array<{
       id: string;
       goal_id: string;
       title: string;
@@ -397,13 +405,13 @@ export class ScoresService {
       achieved: number;
       sort_order: number;
     }>;
-    const tacticRows = this.tacticRows(cycleId);
-    const scheduleRows = this.scheduleRows(weekNumber);
+    const tacticRows = this.tacticRows(cycleId, userId);
+    const scheduleRows = this.scheduleRows(userId, weekNumber);
     const blockRows = this.database.sqlite
       .prepare(
-        'select id, tactic_id, week_number, date, start_time, end_time, duration_minutes, planned_value, note from tactic_calendar_blocks where cycle_id = ? and week_number = ?',
+        'select id, tactic_id, week_number, date, start_time, end_time, duration_minutes, planned_value, note from tactic_calendar_blocks where cycle_id = ? and user_id = ? and week_number = ?',
       )
-      .all(cycleId, weekNumber) as Array<{
+      .all(cycleId, userId, weekNumber) as Array<{
       id: string;
       tactic_id: string;
       week_number: number;
@@ -496,15 +504,15 @@ export class ScoresService {
     const id = newId();
     this.database.sqlite
       .prepare(
-        'insert into week_snapshots (id, cycle_id, week_number, snapshot_json, captured_at, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)',
+        'insert into week_snapshots (id, user_id, cycle_id, week_number, snapshot_json, captured_at, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
       )
-      .run(id, cycleId, weekNumber, json, capturedAt, capturedAt, capturedAt);
+      .run(id, userId, cycleId, weekNumber, json, capturedAt, capturedAt, capturedAt);
     return { id, snapshot };
   }
 
-  goalScores(cycleId: string, weekNumber: number) {
+  goalScores(userId: string, cycleId: string, weekNumber: number) {
     return goalScoresFromTacticScores(
-      this.getWeekScore(cycleId, weekNumber).tactic_scores,
+      this.getWeekScore(userId, cycleId, weekNumber).tactic_scores,
     );
   }
 
@@ -512,19 +520,23 @@ export class ScoresService {
    * Score several weeks without calendar-block precision (weeks overview):
    * full weekly plan per week, like the core batch variant.
    */
-  getWeekScoresBatch(cycleId: string, weekNumbers: number[]): WeekScore[] {
+  getWeekScoresBatch(
+    userId: string,
+    cycleId: string,
+    weekNumbers: number[],
+  ): WeekScore[] {
     const cycle = this.database.sqlite
-      .prepare('select id from cycles where id = ?')
-      .get(cycleId);
+      .prepare('select id from cycles where id = ? and user_id = ?')
+      .get(cycleId, userId);
     if (!cycle) throw new NotFoundException('not_found');
     const asOfDate = new Date().toISOString().slice(0, 10);
-    const tacticRows = this.tacticRows(cycleId);
-    const scheduleRows = this.scheduleRows();
+    const tacticRows = this.tacticRows(cycleId, userId);
+    const scheduleRows = this.scheduleRows(userId);
     const rawEntries = this.database.sqlite
       .prepare(
-        'select tactic_id, date, value, completed, week_number from tactic_entries where cycle_id = ?',
+        'select tactic_id, date, value, completed, week_number from tactic_entries where cycle_id = ? and user_id = ?',
       )
-      .all(cycleId) as Array<{
+      .all(cycleId, userId) as Array<{
       tactic_id: string;
       date: string;
       value: number;

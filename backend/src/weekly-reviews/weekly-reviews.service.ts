@@ -143,7 +143,7 @@ function assertText(v: unknown, name: string, max: number): string {
 export class WeeklyReviewsService {
   constructor(private readonly database: DatabaseService) {}
 
-  list(query: WeeklyReviewListQuery): {
+  list(userId: string, query: WeeklyReviewListQuery): {
     weekly_reviews: WeeklyReview[];
     total: number;
     page: number;
@@ -156,8 +156,8 @@ export class WeeklyReviewsService {
     const sortOrder =
       query.sort === undefined && query.order === undefined ? 'asc' : order;
 
-    const where: string[] = [];
-    const params: unknown[] = [];
+    const where: string[] = ['r.user_id = ?'];
+    const params: unknown[] = [userId];
     if (search) {
       where.push('r.wins LIKE ?');
       params.push(`%${search}%`);
@@ -188,15 +188,15 @@ export class WeeklyReviewsService {
     };
   }
 
-  get(id: string): WeeklyReview {
+  get(userId: string, id: string): WeeklyReview {
     const row = this.database.sqlite
-      .prepare(`select ${COLUMNS} from weekly_reviews where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from weekly_reviews where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!row) throw new NotFoundException('not_found');
     return rowToReview(row);
   }
 
-  create(body: WeeklyReviewBody): WeeklyReview {
+  create(userId: string, body: WeeklyReviewBody): WeeklyReview {
     assertNoUnknown((body ?? {}) as Record<string, unknown>);
     const cycleId = str(body?.cycle_id);
     if (!cycleId)
@@ -205,8 +205,8 @@ export class WeeklyReviewsService {
         message: 'cycle_id is required',
       });
     const cycle = this.database.sqlite
-      .prepare('select id from cycles where id = ?')
-      .get(cycleId);
+      .prepare('select id from cycles where id = ? and user_id = ?')
+      .get(cycleId, userId);
     if (!cycle)
       throw new BadRequestException({
         error: 'bad_request',
@@ -215,9 +215,9 @@ export class WeeklyReviewsService {
     const weekNumber = assertWeek(body?.week_number);
     const dupe = this.database.sqlite
       .prepare(
-        'select id from weekly_reviews where cycle_id = ? and week_number = ?',
+        'select id from weekly_reviews where cycle_id = ? and week_number = ? and user_id = ?',
       )
-      .get(cycleId, weekNumber);
+      .get(cycleId, weekNumber, userId);
     if (dupe)
       throw new ConflictException({
         error: 'conflict',
@@ -227,12 +227,13 @@ export class WeeklyReviewsService {
     const id = newId();
     this.database.sqlite
       .prepare(
-        `insert into weekly_reviews (id, cycle_id, week_number, execution_score, weekly_goals, wins, misses,
+        `insert into weekly_reviews (id, user_id, cycle_id, week_number, execution_score, weekly_goals, wins, misses,
           avoidance_patterns, lessons, next_week_adjustments, completed_at, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
+        userId,
         cycleId,
         weekNumber,
         body?.execution_score === undefined || body.execution_score === null
@@ -251,14 +252,14 @@ export class WeeklyReviewsService {
         now,
         now,
       );
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  update(id: string, body: WeeklyReviewBody): WeeklyReview {
+  update(userId: string, id: string, body: WeeklyReviewBody): WeeklyReview {
     assertNoUnknown((body ?? {}) as Record<string, unknown>);
     const existing = this.database.sqlite
-      .prepare(`select ${COLUMNS} from weekly_reviews where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from weekly_reviews where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!existing) throw new NotFoundException('not_found');
     if (
       (body?.cycle_id !== undefined &&
@@ -300,21 +301,21 @@ export class WeeklyReviewsService {
     }
     sets.push('updated_at = ?');
     params.push(nowIso());
-    params.push(id);
+    params.push(id, userId);
     this.database.sqlite
-      .prepare(`update weekly_reviews set ${sets.join(', ')} where id = ?`)
+      .prepare(`update weekly_reviews set ${sets.join(', ')} where id = ? and user_id = ?`)
       .run(...params);
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  remove(id: string): { ok: boolean } {
+  remove(userId: string, id: string): { ok: boolean } {
     const existing = this.database.sqlite
-      .prepare('select id from weekly_reviews where id = ?')
-      .get(id);
+      .prepare('select id from weekly_reviews where id = ? and user_id = ?')
+      .get(id, userId);
     if (!existing) throw new NotFoundException('not_found');
     this.database.sqlite
-      .prepare('delete from weekly_reviews where id = ?')
-      .run(id);
+      .prepare('delete from weekly_reviews where id = ? and user_id = ?')
+      .run(id, userId);
     return { ok: true };
   }
 }

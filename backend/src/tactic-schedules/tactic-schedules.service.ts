@@ -70,7 +70,7 @@ function assertWeek(v: unknown): number {
 export class TacticSchedulesService {
   constructor(private readonly database: DatabaseService) {}
 
-  list(query: TacticScheduleListQuery): {
+  list(userId: string, query: TacticScheduleListQuery): {
     tactic_schedules: TacticSchedule[];
     total: number;
     page: number;
@@ -81,8 +81,8 @@ export class TacticSchedulesService {
     let sortCol = query.sort ?? 'week_number';
     if (!cols.has(sortCol)) sortCol = 'week_number';
 
-    const where: string[] = [];
-    const params: unknown[] = [];
+    const where: string[] = ['s.user_id = ?'];
+    const params: unknown[] = [userId];
     if (search) {
       where.push('s.id LIKE ?');
       params.push(`%${search}%`);
@@ -117,10 +117,10 @@ export class TacticSchedulesService {
     };
   }
 
-  get(id: string): TacticSchedule {
+  get(userId: string, id: string): TacticSchedule {
     const row = this.database.sqlite
-      .prepare(`select ${COLUMNS} from tactic_schedules where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from tactic_schedules where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!row) throw new NotFoundException('not_found');
     return rowToSchedule(row);
   }
@@ -129,7 +129,7 @@ export class TacticSchedulesService {
    * POST is an upsert per (tactic_id, week_number): an existing row for the
    * week is updated (200 semantics via `created: false`), otherwise created.
    */
-  upsert(body: TacticScheduleBody): {
+  upsert(userId: string, body: TacticScheduleBody): {
     schedule: TacticSchedule;
     created: boolean;
   } {
@@ -141,8 +141,8 @@ export class TacticSchedulesService {
         message: 'tactic_id is required',
       });
     const tactic = this.database.sqlite
-      .prepare('select id from tactics where id = ?')
-      .get(tacticId);
+      .prepare('select id from tactics where id = ? and user_id = ?')
+      .get(tacticId, userId);
     if (!tactic)
       throw new BadRequestException({
         error: 'bad_request',
@@ -162,31 +162,31 @@ export class TacticSchedulesService {
     const now = nowIso();
     const existing = this.database.sqlite
       .prepare(
-        'select id from tactic_schedules where tactic_id = ? and week_number = ?',
+        'select id from tactic_schedules where tactic_id = ? and week_number = ? and user_id = ?',
       )
-      .get(tacticId, weekNumber) as { id: string } | undefined;
+      .get(tacticId, weekNumber, userId) as { id: string } | undefined;
     if (existing) {
       this.database.sqlite
         .prepare(
-          'update tactic_schedules set planned_target = ?, required = ?, updated_at = ? where id = ?',
+          'update tactic_schedules set planned_target = ?, required = ?, updated_at = ? where id = ? and user_id = ?',
         )
-        .run(plannedTarget, required, now, existing.id);
-      return { schedule: this.get(existing.id), created: false };
+        .run(plannedTarget, required, now, existing.id, userId);
+      return { schedule: this.get(userId, existing.id), created: false };
     }
     const id = newId();
     this.database.sqlite
       .prepare(
-        'insert into tactic_schedules (id, tactic_id, week_number, planned_target, required, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)',
+        'insert into tactic_schedules (id, user_id, tactic_id, week_number, planned_target, required, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
       )
-      .run(id, tacticId, weekNumber, plannedTarget, required, now, now);
-    return { schedule: this.get(id), created: true };
+      .run(id, userId, tacticId, weekNumber, plannedTarget, required, now, now);
+    return { schedule: this.get(userId, id), created: true };
   }
 
-  update(id: string, body: TacticScheduleBody): TacticSchedule {
+  update(userId: string, id: string, body: TacticScheduleBody): TacticSchedule {
     assertNoUnknown((body ?? {}) as Record<string, unknown>);
     const existing = this.database.sqlite
-      .prepare(`select ${COLUMNS} from tactic_schedules where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from tactic_schedules where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!existing) throw new NotFoundException('not_found');
 
     const sets: string[] = [];
@@ -214,21 +214,21 @@ export class TacticSchedulesService {
     }
     sets.push('updated_at = ?');
     params.push(nowIso());
-    params.push(id);
+    params.push(id, userId);
     this.database.sqlite
-      .prepare(`update tactic_schedules set ${sets.join(', ')} where id = ?`)
+      .prepare(`update tactic_schedules set ${sets.join(', ')} where id = ? and user_id = ?`)
       .run(...params);
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  remove(id: string): { ok: boolean } {
+  remove(userId: string, id: string): { ok: boolean } {
     const existing = this.database.sqlite
-      .prepare('select id from tactic_schedules where id = ?')
-      .get(id);
+      .prepare('select id from tactic_schedules where id = ? and user_id = ?')
+      .get(id, userId);
     if (!existing) throw new NotFoundException('not_found');
     this.database.sqlite
-      .prepare('delete from tactic_schedules where id = ?')
-      .run(id);
+      .prepare('delete from tactic_schedules where id = ? and user_id = ?')
+      .run(id, userId);
     return { ok: true };
   }
 }

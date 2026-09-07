@@ -7,6 +7,7 @@ import { AppModule } from './app.module';
 import { AuthProviderToken } from './auth/auth.constants';
 import type { Auth } from './auth/auth';
 import { AuthService } from './auth/auth.service';
+import { DatabaseService } from './database/database.service';
 import { JsonExceptionFilter } from './http/json-exception.filter';
 
 process.env.DATABASE_PATH = ':memory:';
@@ -40,7 +41,14 @@ beforeAll(async () => {
   httpAdapter.use('/api/auth', toNodeHandler(app.get<Auth>(AuthProviderToken)));
   await app.init();
   const auth = app.get(AuthService);
-  token = auth.createToken('test@vibelabs.local', 'e2e').token;
+  const db = app.get(DatabaseService);
+  const nowMs = Date.now();
+  db.sqlite
+    .prepare(
+      'insert into user (id, name, email, email_verified, created_at, updated_at) values (?, ?, ?, ?, ?, ?)',
+    )
+    .run('e2e-user', 'e2e', 'test@vibelabs.local', 0, nowMs, nowMs);
+  token = auth.createToken('e2e-user', 'test@vibelabs.local', 'e2e').token;
 });
 
 afterAll(async () => {

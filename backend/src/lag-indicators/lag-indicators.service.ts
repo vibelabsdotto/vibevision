@@ -100,7 +100,7 @@ function assertAmount(v: unknown, name: string, fallback: number): number {
 export class LagIndicatorsService {
   constructor(private readonly database: DatabaseService) {}
 
-  list(query: LagIndicatorListQuery): {
+  list(userId: string, query: LagIndicatorListQuery): {
     lag_indicators: LagIndicator[];
     total: number;
     page: number;
@@ -113,8 +113,8 @@ export class LagIndicatorsService {
     const sortOrder =
       query.sort === undefined && query.order === undefined ? 'asc' : order;
 
-    const where: string[] = [];
-    const params: unknown[] = [];
+    const where: string[] = ['l.user_id = ?'];
+    const params: unknown[] = [userId];
     if (search) {
       where.push('l.title LIKE ?');
       params.push(`%${search}%`);
@@ -145,15 +145,15 @@ export class LagIndicatorsService {
     };
   }
 
-  get(id: string): LagIndicator {
+  get(userId: string, id: string): LagIndicator {
     const row = this.database.sqlite
-      .prepare(`select ${COLUMNS} from lag_indicators where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from lag_indicators where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!row) throw new NotFoundException('not_found');
     return rowToLag(row);
   }
 
-  create(body: LagIndicatorBody): LagIndicator {
+  create(userId: string, body: LagIndicatorBody): LagIndicator {
     assertNoUnknown((body ?? {}) as Record<string, unknown>);
     const goalId = str(body?.goal_id);
     if (!goalId)
@@ -162,8 +162,8 @@ export class LagIndicatorsService {
         message: 'goal_id is required',
       });
     const goal = this.database.sqlite
-      .prepare('select id from goals where id = ?')
-      .get(goalId);
+      .prepare('select id from goals where id = ? and user_id = ?')
+      .get(goalId, userId);
     if (!goal)
       throw new BadRequestException({
         error: 'bad_request',
@@ -179,11 +179,12 @@ export class LagIndicatorsService {
     const id = newId();
     this.database.sqlite
       .prepare(
-        `insert into lag_indicators (id, goal_id, title, type, target_value, current_value, unit, achieved, sort_order, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `insert into lag_indicators (id, user_id, goal_id, title, type, target_value, current_value, unit, achieved, sort_order, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
+        userId,
         goalId,
         title,
         body?.type === undefined ? '' : assertType(body.type),
@@ -195,14 +196,14 @@ export class LagIndicatorsService {
         now,
         now,
       );
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  update(id: string, body: LagIndicatorBody): LagIndicator {
+  update(userId: string, id: string, body: LagIndicatorBody): LagIndicator {
     assertNoUnknown((body ?? {}) as Record<string, unknown>);
     const existing = this.database.sqlite
-      .prepare(`select ${COLUMNS} from lag_indicators where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from lag_indicators where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!existing) throw new NotFoundException('not_found');
     if (body?.goal_id !== undefined && str(body.goal_id) !== existing.goal_id) {
       throw new BadRequestException({
@@ -249,32 +250,32 @@ export class LagIndicatorsService {
     }
     sets.push('updated_at = ?');
     params.push(nowIso());
-    params.push(id);
+    params.push(id, userId);
     this.database.sqlite
-      .prepare(`update lag_indicators set ${sets.join(', ')} where id = ?`)
+      .prepare(`update lag_indicators set ${sets.join(', ')} where id = ? and user_id = ?`)
       .run(...params);
-    return this.get(id);
+    return this.get(userId, id);
   }
 
   /** Mark achieved: achieved=1 and current_value=target_value. */
-  achieve(id: string): LagIndicator {
-    const existing = this.get(id);
+  achieve(userId: string, id: string): LagIndicator {
+    const existing = this.get(userId, id);
     this.database.sqlite
       .prepare(
-        'update lag_indicators set achieved = 1, current_value = target_value, updated_at = ? where id = ?',
+        'update lag_indicators set achieved = 1, current_value = target_value, updated_at = ? where id = ? and user_id = ?',
       )
-      .run(nowIso(), id);
-    return this.get(existing.id);
+      .run(nowIso(), id, userId);
+    return this.get(userId, existing.id);
   }
 
-  remove(id: string): { ok: boolean } {
+  remove(userId: string, id: string): { ok: boolean } {
     const existing = this.database.sqlite
-      .prepare('select id from lag_indicators where id = ?')
-      .get(id);
+      .prepare('select id from lag_indicators where id = ? and user_id = ?')
+      .get(id, userId);
     if (!existing) throw new NotFoundException('not_found');
     this.database.sqlite
-      .prepare('delete from lag_indicators where id = ?')
-      .run(id);
+      .prepare('delete from lag_indicators where id = ? and user_id = ?')
+      .run(id, userId);
     return { ok: true };
   }
 }

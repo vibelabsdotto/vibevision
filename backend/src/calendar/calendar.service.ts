@@ -49,6 +49,7 @@ export class CalendarService {
   constructor(private readonly database: DatabaseService) {}
 
   getCalendar(
+    userId: string,
     cycleId: string,
     from: string,
     to: string,
@@ -59,8 +60,8 @@ export class CalendarService {
   } {
     const sqlite = this.database.sqlite;
     const cycle = sqlite
-      .prepare('select id from cycles where id = ?')
-      .get(cycleId);
+      .prepare('select id from cycles where id = ? and user_id = ?')
+      .get(cycleId, userId);
     if (!cycle) throw new NotFoundException('not_found');
     if (!isIsoDate(from) || !isIsoDate(to)) {
       throw new BadRequestException({
@@ -82,10 +83,10 @@ export class CalendarService {
            from tactic_calendar_blocks b
            left join tactics t on t.id = b.tactic_id
            left join goals g on g.id = t.goal_id
-           where b.cycle_id = ? and b.date >= ? and b.date <= ?
+           where b.cycle_id = ? and b.user_id = ? and b.date >= ? and b.date <= ?
            order by b.date asc, b.start_time asc, b.id asc`,
         )
-        .all(cycleId, from, to) as Array<Record<string, unknown>>
+        .all(cycleId, userId, from, to) as Array<Record<string, unknown>>
     ).map((row) => ({
       id: String(row.id),
       tactic_id: String(row.tactic_id),
@@ -107,24 +108,24 @@ export class CalendarService {
         .prepare(
           `select t.*, g.title as goal_title, g.sort_order as goal_sort
            from tactics t join goals g on g.id = t.goal_id
-           where g.cycle_id = ? order by g.sort_order asc, t.sort_order asc, t.id asc`,
+           where g.cycle_id = ? and g.user_id = ? and t.user_id = ? order by g.sort_order asc, t.sort_order asc, t.id asc`,
         )
-        .all(cycleId) as Array<Record<string, unknown>>
+        .all(cycleId, userId, userId) as Array<Record<string, unknown>>
     ).filter((row) => toBool(row.active));
     const schedules = sqlite
       .prepare(
-        'select tactic_id, week_number, planned_target from tactic_schedules',
+        'select tactic_id, week_number, planned_target from tactic_schedules where user_id = ?',
       )
-      .all() as Array<{
+      .all(userId) as Array<{
       tactic_id: string;
       week_number: number;
       planned_target: number | null;
     }>;
     const weeks = sqlite
       .prepare(
-        'select week_number, start_date, end_date from cycle_weeks where cycle_id = ?',
+        'select week_number, start_date, end_date from cycle_weeks where cycle_id = ? and user_id = ?',
       )
-      .all(cycleId) as Array<{
+      .all(cycleId, userId) as Array<{
       week_number: number;
       start_date: string;
       end_date: string;

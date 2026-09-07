@@ -1,5 +1,7 @@
 import { Controller, Get, Param, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
+import { Auth } from '../auth/auth.decorator';
+import type { AuthContext } from '../auth/auth.types';
 import type { WeekReport } from './reports.service';
 import { ReportsService } from './reports.service';
 
@@ -10,12 +12,13 @@ export class ReportsController {
 
   @Get()
   get(
+    @Auth() auth: AuthContext,
     @Param('id') id: string,
     @Param('n') n: string,
     @Query('format') format: string,
     @Res({ passthrough: true }) res: Response,
   ): WeekReport | string {
-    const report = this.reports.getWeekReport(id, Number(n));
+    const report = this.reports.getWeekReport(auth.userId, id, Number(n));
     if (format === 'markdown') {
       res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
       return this.reports.renderMarkdown(report);

@@ -5,7 +5,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Request } from 'express';
 import { DatabaseService } from '../database/database.service';
@@ -63,8 +63,8 @@ export class AuthService {
   /**
    * Verification order per contract §3:
    * 1. Better-Auth session cookie (`auth.api.getSession`, join fallback),
-   * 2. API token (`Authorization: Bearer *** Single-workspace: the
-   * identity is just { email, via } — no ownership.
+   * 2. API token (`Authorization: Bearer *** Per-user: the identity is
+   * { userId, email, via } — services scope all data access by userId.
    * Returns null when neither mechanism authenticates.
    */
   async authenticate(request: Request): Promise<AuthContext | null> {
@@ -90,6 +90,7 @@ export class AuthService {
       });
       if (result?.user?.id) {
         return {
+          userId: result.user.id,
           email: result.user.email.toLowerCase(),
           via: 'session',
         };
@@ -121,6 +122,7 @@ export class AuthService {
     for (const candidate of candidates) {
       const row = this.database.db
         .select({
+          userId: user.id,
           email: user.email,
           expiresAt: sessionTable.expiresAt,
         })
@@ -131,6 +133,7 @@ export class AuthService {
       if (!row) continue;
       if (row.expiresAt.getTime() <= Date.now()) continue;
       return {
+        userId: row.userId,
         email: row.email.toLowerCase(),
         via: 'session',
       };
@@ -162,13 +165,14 @@ export class AuthService {
         .where(eq(apiTokens.id, row.id))
         .run();
     }
-    return { email: row.ownerEmail, via: 'token' };
+    return { userId: row.userId, email: row.ownerEmail, via: 'token' };
   }
 
-  createToken(ownerEmail: string, name: string): CreatedToken {
+  createToken(userId: string, ownerEmail: string, name: string): CreatedToken {
     const token = `vv_${randomBytes(24).toString('hex')}`;
     const row: typeof apiTokens.$inferInsert = {
       id: randomUUID(),
+      userId,
       ownerEmail,
       name,
       tokenHash: hashToken(token),
@@ -180,8 +184,8 @@ export class AuthService {
     return { id: row.id, token, prefix: row.prefix };
   }
 
-  /** Single-workspace: lists all tokens, newest first, never hashes. */
-  listTokens(): TokenMeta[] {
+  /** Per-user: lists this user's tokens, newest first, never hashes. */
+  listTokens(userId: string): TokenMeta[] {
     return this.database.db
       .select({
         id: apiTokens.id,
@@ -191,18 +195,25 @@ export class AuthService {
         lastUsedAt: apiTokens.lastUsedAt,
       })
       .from(apiTokens)
+      .where(eq(apiTokens.userId, userId))
       .all();
   }
 
-  /** Returns false when the token does not exist. */
-  revokeToken(id: string): boolean {
+  /**
+   * Returns false when the token does not exist for this user — including
+   * tokens owned by another user (never confirm cross-user existence).
+   */
+  revokeToken(userId: string, id: string): boolean {
     const row = this.database.db
       .select({ id: apiTokens.id })
       .from(apiTokens)
-      .where(eq(apiTokens.id, id))
+      .where(and(eq(apiTokens.id, id), eq(apiTokens.userId, userId)))
       .get();
     if (!row) return false;
-    this.database.db.delete(apiTokens).where(eq(apiTokens.id, id)).run();
+    this.database.db
+      .delete(apiTokens)
+      .where(and(eq(apiTokens.id, id), eq(apiTokens.userId, userId)))
+      .run();
     return true;
   }
 }

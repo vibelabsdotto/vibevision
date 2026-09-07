@@ -38,6 +38,7 @@ export class DashboardService {
   ) {}
 
   getDashboard(
+    userId: string,
     cycleIdParam?: string,
     asOfDate?: string,
   ): { dashboard: DashboardData | null } {
@@ -46,15 +47,15 @@ export class DashboardService {
     let cycle: Record<string, unknown> | undefined;
     if (cycleIdParam) {
       cycle = sqlite
-        .prepare('select * from cycles where id = ?')
-        .get(cycleIdParam) as Record<string, unknown> | undefined;
+        .prepare('select * from cycles where id = ? and user_id = ?')
+        .get(cycleIdParam, userId) as Record<string, unknown> | undefined;
       if (!cycle) return { dashboard: null };
     } else {
-      cycle = this.activeCycle();
+      cycle = this.activeCycle(userId);
       if (!cycle) return { dashboard: null };
     }
     const cycleId = String(cycle.id);
-    const weeks = this.scores.weeksOf(cycleId);
+    const weeks = this.scores.weeksOf(cycleId, userId);
     const currentWeek =
       currentWeekNumber(
         weeks.map((w) => ({
@@ -65,23 +66,27 @@ export class DashboardService {
         asOf,
       ) ?? 1;
 
-    const snapshot = this.scores.latestSnapshot(cycleId, currentWeek)?.snapshot;
+    const snapshot = this.scores.latestSnapshot(
+      cycleId,
+      userId,
+      currentWeek,
+    )?.snapshot;
     const goals = snapshot
       ? snapshot.goals.map((goal) => ({ ...goal, cycle_id: cycleId }))
       : (sqlite
           .prepare(
-            'select * from goals where cycle_id = ? order by sort_order asc',
+            'select * from goals where cycle_id = ? and user_id = ? order by sort_order asc',
           )
-          .all(cycleId) as Record<string, unknown>[]);
+          .all(cycleId, userId) as Record<string, unknown>[]);
     const lags = snapshot
       ? snapshot.lag_indicators
       : (sqlite
           .prepare(
-            `select l.* from lag_indicators l join goals g on g.id = l.goal_id where g.cycle_id = ?`,
+            `select l.* from lag_indicators l join goals g on g.id = l.goal_id where g.cycle_id = ? and g.user_id = ? and l.user_id = ?`,
           )
-          .all(cycleId) as Record<string, unknown>[]);
+          .all(cycleId, userId, userId) as Record<string, unknown>[]);
 
-    const score = this.scores.getWeekScore(cycleId, currentWeek, {
+    const score = this.scores.getWeekScore(userId, cycleId, currentWeek, {
       as_of_date: asOf,
     });
 
@@ -95,7 +100,7 @@ export class DashboardService {
             snapshot.goals.find((goal) => goal.id === tactic.goal_id)?.title ??
             'Unknown goal',
         }))
-      : this.scores.tacticRows(cycleId).map((row) => ({
+      : this.scores.tacticRows(cycleId, userId).map((row) => ({
           tactic: { ...row.tactic },
           goal_title: row.goal_title,
         }));
@@ -103,9 +108,9 @@ export class DashboardService {
     const weekEntries: ScoreEntry[] = (
       sqlite
         .prepare(
-          'select tactic_id, date, value, completed from tactic_entries where cycle_id = ? and week_number = ?',
+          'select tactic_id, date, value, completed from tactic_entries where cycle_id = ? and user_id = ? and week_number = ?',
         )
-        .all(cycleId, currentWeek) as Array<{
+        .all(cycleId, userId, currentWeek) as Array<{
         tactic_id: string;
         date: string;
         value: number;
@@ -121,9 +126,9 @@ export class DashboardService {
     const weekBlocks: TodayBlockRow[] = (
       sqlite
         .prepare(
-          'select * from tactic_calendar_blocks where cycle_id = ? and week_number = ? order by date asc, start_time asc, id asc',
+          'select * from tactic_calendar_blocks where cycle_id = ? and user_id = ? and week_number = ? order by date asc, start_time asc, id asc',
         )
-        .all(cycleId, currentWeek) as Array<Record<string, unknown>>
+        .all(cycleId, userId, currentWeek) as Array<Record<string, unknown>>
     ).map((row) => ({
       id: String(row.id),
       tactic_id: String(row.tactic_id),
@@ -207,15 +212,15 @@ export class DashboardService {
 
     const reviews = sqlite
       .prepare(
-        'select * from weekly_reviews where cycle_id = ? order by week_number asc',
+        'select * from weekly_reviews where cycle_id = ? and user_id = ? order by week_number asc',
       )
-      .all(cycleId) as Record<string, unknown>[];
+      .all(cycleId, userId) as Record<string, unknown>[];
     const recentEvents = (
       sqlite
         .prepare(
-          'select id, type, created_at from events where cycle_id = ? order by created_at desc limit 10',
+          'select id, type, created_at from events where cycle_id = ? and user_id = ? order by created_at desc limit 10',
         )
-        .all(cycleId) as Array<{ id: string; type: string; created_at: string }>
+        .all(cycleId, userId) as Array<{ id: string; type: string; created_at: string }>
     ).map((row) => ({
       id: row.id,
       type: row.type,
@@ -247,21 +252,23 @@ export class DashboardService {
     };
   }
 
-  private activeCycle(): Record<string, unknown> | undefined {
+  private activeCycle(userId: string): Record<string, unknown> | undefined {
     const sqlite = this.database.sqlite;
     const setting = sqlite
-      .prepare("select value from settings where key = 'active_cycle_id'")
-      .get() as { value: string } | undefined;
+      .prepare(
+        "select value from settings where key = 'active_cycle_id' and user_id = ?",
+      )
+      .get(userId) as { value: string } | undefined;
     if (setting?.value) {
       const row = sqlite
-        .prepare('select * from cycles where id = ?')
-        .get(setting.value) as Record<string, unknown> | undefined;
+        .prepare('select * from cycles where id = ? and user_id = ?')
+        .get(setting.value, userId) as Record<string, unknown> | undefined;
       if (row) return row;
     }
     return sqlite
       .prepare(
-        "select * from cycles where status = 'active' order by start_date desc limit 1",
+        "select * from cycles where status = 'active' and user_id = ? order by start_date desc limit 1",
       )
-      .get() as Record<string, unknown> | undefined;
+      .get(userId) as Record<string, unknown> | undefined;
   }
 }

@@ -1,4 +1,6 @@
 import { Body, Controller, Get, Param, Put, Query } from '@nestjs/common';
+import { Auth } from '../auth/auth.decorator';
+import type { AuthContext } from '../auth/auth.types';
 import type { CycleWeek, CycleWeekListQuery } from './cycle-weeks.service';
 import { CycleWeeksService } from './cycle-weeks.service';
 
@@ -10,6 +12,7 @@ export class CycleWeeksController {
 
   @Get()
   list(
+    @Auth() auth: AuthContext,
     @Query()
     query: CycleWeekListQuery,
   ): {
@@ -18,19 +21,23 @@ export class CycleWeeksController {
     page: number;
     limit: number;
   } {
-    return this.weeks.list(query ?? {});
+    return this.weeks.list(auth.userId, query ?? {});
   }
 
   @Get(':id')
-  get(@Param('id') id: string): { cycle_week: CycleWeek } {
-    return { cycle_week: this.weeks.get(id) };
+  get(
+    @Auth() auth: AuthContext,
+    @Param('id') id: string,
+  ): { cycle_week: CycleWeek } {
+    return { cycle_week: this.weeks.get(auth.userId, id) };
   }
 
   @Put(':id')
   update(
+    @Auth() auth: AuthContext,
     @Param('id') id: string,
     @Body() body: { label?: unknown },
   ): { cycle_week: CycleWeek } {
-    return { cycle_week: this.weeks.update(id, body ?? {}) };
+    return { cycle_week: this.weeks.update(auth.userId, id, body ?? {}) };
   }
 }

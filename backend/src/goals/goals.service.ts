@@ -70,7 +70,7 @@ function assertStatus(v: unknown): string {
 export class GoalsService {
   constructor(private readonly database: DatabaseService) {}
 
-  list(query: GoalListQuery): {
+  list(userId: string, query: GoalListQuery): {
     goals: Goal[];
     total: number;
     page: number;
@@ -83,8 +83,8 @@ export class GoalsService {
     const sortOrder =
       query.sort === undefined && query.order === undefined ? 'asc' : order;
 
-    const where: string[] = [];
-    const params: unknown[] = [];
+    const where: string[] = ['g.user_id = ?'];
+    const params: unknown[] = [userId];
     if (search) {
       where.push('g.title LIKE ?');
       params.push(`%${search}%`);
@@ -115,15 +115,15 @@ export class GoalsService {
     return { goals: rows.map(rowToGoal), total: totalRow.n, page, limit };
   }
 
-  get(id: string): Goal {
+  get(userId: string, id: string): Goal {
     const row = this.database.sqlite
-      .prepare(`select ${COLUMNS} from goals where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from goals where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!row) throw new NotFoundException('not_found');
     return rowToGoal(row);
   }
 
-  create(body: GoalBody): Goal {
+  create(userId: string, body: GoalBody): Goal {
     assertNoUnknown((body ?? {}) as Record<string, unknown>);
     const cycleId = str(body?.cycle_id);
     if (!cycleId)
@@ -132,8 +132,8 @@ export class GoalsService {
         message: 'cycle_id is required',
       });
     const cycle = this.database.sqlite
-      .prepare('select id from cycles where id = ?')
-      .get(cycleId);
+      .prepare('select id from cycles where id = ? and user_id = ?')
+      .get(cycleId, userId);
     if (!cycle)
       throw new BadRequestException({
         error: 'bad_request',
@@ -151,10 +151,11 @@ export class GoalsService {
     const id = newId();
     this.database.sqlite
       .prepare(
-        'insert into goals (id, cycle_id, title, description, sort_order, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
+        'insert into goals (id, user_id, cycle_id, title, description, sort_order, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
       .run(
         id,
+        userId,
         cycleId,
         title,
         body?.description === undefined ? '' : str(body.description),
@@ -163,14 +164,14 @@ export class GoalsService {
         now,
         now,
       );
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  update(id: string, body: GoalBody): Goal {
+  update(userId: string, id: string, body: GoalBody): Goal {
     assertNoUnknown((body ?? {}) as Record<string, unknown>);
     const existing = this.database.sqlite
-      .prepare(`select ${COLUMNS} from goals where id = ?`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`select ${COLUMNS} from goals where id = ? and user_id = ?`)
+      .get(id, userId) as Record<string, unknown> | undefined;
     if (!existing) throw new NotFoundException('not_found');
     if (
       body?.cycle_id !== undefined &&
@@ -214,19 +215,21 @@ export class GoalsService {
     }
     sets.push('updated_at = ?');
     params.push(nowIso());
-    params.push(id);
+    params.push(id, userId);
     this.database.sqlite
-      .prepare(`update goals set ${sets.join(', ')} where id = ?`)
+      .prepare(`update goals set ${sets.join(', ')} where id = ? and user_id = ?`)
       .run(...params);
-    return this.get(id);
+    return this.get(userId, id);
   }
 
-  remove(id: string): { ok: boolean } {
+  remove(userId: string, id: string): { ok: boolean } {
     const existing = this.database.sqlite
-      .prepare('select id from goals where id = ?')
-      .get(id);
+      .prepare('select id from goals where id = ? and user_id = ?')
+      .get(id, userId);
     if (!existing) throw new NotFoundException('not_found');
-    this.database.sqlite.prepare('delete from goals where id = ?').run(id);
+    this.database.sqlite
+      .prepare('delete from goals where id = ? and user_id = ?')
+      .run(id, userId);
     return { ok: true };
   }
 }

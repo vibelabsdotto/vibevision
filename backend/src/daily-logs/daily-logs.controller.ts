@@ -9,6 +9,8 @@ import {
   Put,
   Query,
 } from '@nestjs/common';
+import { Auth } from '../auth/auth.decorator';
+import type { AuthContext } from '../auth/auth.types';
 import { str } from '../common/util';
 import type {
   DailyLog,
@@ -24,6 +26,7 @@ export class DailyLogsController {
 
   @Get()
   listOrGet(
+    @Auth() auth: AuthContext,
     @Query()
     query: DailyLogListQuery,
   ):
@@ -31,44 +34,64 @@ export class DailyLogsController {
     | { daily_log: DailyLog | null } {
     if (query?.date !== undefined) {
       return {
-        daily_log: this.logs.getByCycleAndDate(str(query.cycle_id), query.date),
+        daily_log: this.logs.getByCycleAndDate(
+          auth.userId,
+          str(query.cycle_id),
+          query.date,
+        ),
       };
     }
-    return this.logs.list(query ?? {});
+    return this.logs.list(auth.userId, query ?? {});
   }
 
   @Get(':id')
-  get(@Param('id') id: string): { daily_log: DailyLog } {
-    return { daily_log: this.logs.get(id) };
+  get(
+    @Auth() auth: AuthContext,
+    @Param('id') id: string,
+  ): { daily_log: DailyLog } {
+    return { daily_log: this.logs.get(auth.userId, id) };
   }
 
   @Post()
   @HttpCode(201)
-  create(@Body() body: DailyLogBody): { daily_log: DailyLog } {
-    return { daily_log: this.logs.create(body ?? {}) };
+  create(
+    @Auth() auth: AuthContext,
+    @Body() body: DailyLogBody,
+  ): { daily_log: DailyLog } {
+    return { daily_log: this.logs.create(auth.userId, body ?? {}) };
   }
 
   @Post('checkin')
   @HttpCode(200)
-  checkin(@Body() body: Record<string, unknown>): { daily_log: DailyLog } {
-    return { daily_log: this.logs.checkin(body ?? {}) };
+  checkin(
+    @Auth() auth: AuthContext,
+    @Body() body: Record<string, unknown>,
+  ): { daily_log: DailyLog } {
+    return { daily_log: this.logs.checkin(auth.userId, body ?? {}) };
   }
 
   @Put()
-  upsert(@Body() body: DailyLogBody): { daily_log: DailyLog } {
-    return { daily_log: this.logs.upsert(body ?? {}) };
+  upsert(
+    @Auth() auth: AuthContext,
+    @Body() body: DailyLogBody,
+  ): { daily_log: DailyLog } {
+    return { daily_log: this.logs.upsert(auth.userId, body ?? {}) };
   }
 
   @Put(':id')
   update(
+    @Auth() auth: AuthContext,
     @Param('id') id: string,
     @Body() body: DailyLogBody,
   ): { daily_log: DailyLog } {
-    return { daily_log: this.logs.update(id, body ?? {}) };
+    return { daily_log: this.logs.update(auth.userId, id, body ?? {}) };
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string): { ok: boolean } {
-    return this.logs.remove(id);
+  remove(
+    @Auth() auth: AuthContext,
+    @Param('id') id: string,
+  ): { ok: boolean } {
+    return this.logs.remove(auth.userId, id);
   }
 }

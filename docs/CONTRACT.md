@@ -21,7 +21,7 @@ Port des PocketBase-Backends (`backend/pocketbase`, Collections siehe `scripts/m
 - **Settings** — Key-Value (`active_cycle` u.a.).
 - **API-Token** — Personal Access Token für CLI, Format `vv_<48 hex>` (Prefix `vv_`).
 
-**Tenant-Modell v1: Single-Workspace** (wie PB `AUTH_RULE`). Jede authentifizierte Identität (Session ODER Token) hat volles CRUD auf alle Daten. Kein Row-Ownership, kein Sharing.
+**Tenant-Modell v2: Per-User-Isolation.** Jede Fach-Tabelle trägt `user_id` (FK → `user.id`, ON DELETE CASCADE). Jede authentifizierte Identität (Session ODER Token) sieht und mutiert nur eigene Rows; Fremdzugriff gibt 404 (kein Existence-Leak). Migration `0002`: Backfill aller Bestands-Rows auf den ältesten User (`MIN(created_at)`).
 
 ## 2. Storage — SQLite (drizzle + better-sqlite3, `/data/vibevision.sqlite` in Prod, `./data/vibevision.sqlite` lokal)
 
@@ -89,13 +89,13 @@ Von Better Auth verwaltet (Drizzle-Adapter). Nicht manuell verändern.
 
 ### Tabelle `api_tokens`
 
-`id` PK (UUID), `owner_email` NOT NULL, `name` NOT NULL, `token_hash` NOT NULL UNIQUE (SHA-256 hex), `prefix` NOT NULL (erste 12 Zeichen), `created_at` NOT NULL, `last_used_at` NULL. (Kein `owner_id` — Single-Workspace.)
+`id` PK (UUID), `user_id` NOT NULL (FK → `user.id`, CASCADE), `owner_email` NOT NULL, `name` NOT NULL, `token_hash` NOT NULL UNIQUE (SHA-256 hex), `prefix` NOT NULL (erste 12 Zeichen), `created_at` NOT NULL, `last_used_at` NULL. Token-Listen/Revoke sind pro User.
 
 **v1-Nicht-Ziele:** keine File-Uploads (PB hatte keine), keine Realtime-Abos, keine Admin-UI.
 
 ## 3. Auth
 
-Reihenfolge überall: 1. **Better-Auth-Session (Cookie)**, 2. **API-Token** `Authorization: Bearer *** (SHA-256 → Lookup, `last_used_at`-Update throttled 60 s). Better-Auth-Handler als Express-Middleware unter `/api/auth/*` (VOR dem Nest-Router, dort kein Guard). Login: Email + Password, kein Verify, kein OAuth. Guard: globaler `APP_GUARD` + `@Public()` für `/health`. Fehler: `401 { error: 'unauthorized' }`. `BETTER_AUTH_SECRET` fehlt/Platzhalter → Boot-Fail.
+Reihenfolge überall: 1. **Better-Auth-Session (Cookie)**, 2. **API-Token** `Authorization: Bearer *** (SHA-256 → Lookup, `last_used_at`-Update throttled 60 s). Better-Auth-Handler als Express-Middleware unter `/api/auth/*` (VOR dem Nest-Router, dort kein Guard). Login: Email + Password, kein Verify, kein OAuth. Guard: globaler `APP_GUARD` + `@Public()` für `/health`. Der Guard hängt `request.auth` an (`AuthContext { userId, email, via }`); Controller lesen sie per `@Auth()` und geben `userId` an Services weiter — alle Fach-Queries sind pro User gefiltert. Fehler: `401 { error: 'unauthorized' }`. `BETTER_AUTH_SECRET` fehlt/Platzhalter → Boot-Fail.
 
 ## 4. API (NestJS, Prefix `/v1`, Port lokal `3101`)
 

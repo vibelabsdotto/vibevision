@@ -9,6 +9,8 @@ import {
   Put,
   Query,
 } from '@nestjs/common';
+import { Auth } from '../auth/auth.decorator';
+import type { AuthContext } from '../auth/auth.types';
 import type { Goal, GoalBody, GoalListQuery } from './goals.dto';
 import { GoalsService } from './goals.service';
 
@@ -19,30 +21,44 @@ export class GoalsController {
 
   @Get()
   list(
+    @Auth() auth: AuthContext,
     @Query()
     query: GoalListQuery,
   ): { goals: Goal[]; total: number; page: number; limit: number } {
-    return this.goals.list(query ?? {});
+    return this.goals.list(auth.userId, query ?? {});
   }
 
   @Get(':id')
-  get(@Param('id') id: string): { goal: Goal } {
-    return { goal: this.goals.get(id) };
+  get(
+    @Auth() auth: AuthContext,
+    @Param('id') id: string,
+  ): { goal: Goal } {
+    return { goal: this.goals.get(auth.userId, id) };
   }
 
   @Post()
   @HttpCode(201)
-  create(@Body() body: GoalBody): { goal: Goal } {
-    return { goal: this.goals.create(body ?? {}) };
+  create(
+    @Auth() auth: AuthContext,
+    @Body() body: GoalBody,
+  ): { goal: Goal } {
+    return { goal: this.goals.create(auth.userId, body ?? {}) };
   }
 
   @Put(':id')
-  update(@Param('id') id: string, @Body() body: GoalBody): { goal: Goal } {
-    return { goal: this.goals.update(id, body ?? {}) };
+  update(
+    @Auth() auth: AuthContext,
+    @Param('id') id: string,
+    @Body() body: GoalBody,
+  ): { goal: Goal } {
+    return { goal: this.goals.update(auth.userId, id, body ?? {}) };
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string): { ok: boolean } {
-    return this.goals.remove(id);
+  remove(
+    @Auth() auth: AuthContext,
+    @Param('id') id: string,
+  ): { ok: boolean } {
+    return this.goals.remove(auth.userId, id);
   }
 }

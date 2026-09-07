@@ -58,22 +58,26 @@ export class ReportsService {
     private readonly scores: ScoresService,
   ) {}
 
-  getWeekReport(cycleId: string, weekNumber: number): WeekReport {
+  getWeekReport(
+    userId: string,
+    cycleId: string,
+    weekNumber: number,
+  ): WeekReport {
     const sqlite = this.database.sqlite;
     const cycle = sqlite
-      .prepare('select * from cycles where id = ?')
-      .get(cycleId) as Record<string, unknown> | undefined;
+      .prepare('select * from cycles where id = ? and user_id = ?')
+      .get(cycleId, userId) as Record<string, unknown> | undefined;
     if (!cycle) throw new NotFoundException('not_found');
     const week = sqlite
       .prepare(
-        'select * from cycle_weeks where cycle_id = ? and week_number = ?',
+        'select * from cycle_weeks where cycle_id = ? and user_id = ? and week_number = ?',
       )
-      .get(cycleId, weekNumber) as Record<string, unknown> | undefined;
+      .get(cycleId, userId, weekNumber) as Record<string, unknown> | undefined;
     if (!week) throw new NotFoundException('not_found');
 
     // Weekly reports are final reflections, not a live "through yesterday"
     // dashboard view: score against the full-week plan (include the end date).
-    const score = this.scores.getWeekScore(cycleId, weekNumber, {
+    const score = this.scores.getWeekScore(userId, cycleId, weekNumber, {
       as_of_date: String(week.end_date),
       include_as_of_date: true,
     });
@@ -85,9 +89,9 @@ export class ReportsService {
            from tactic_calendar_blocks b
            left join tactics t on t.id = b.tactic_id
            left join goals g on g.id = t.goal_id
-           where b.cycle_id = ? and b.week_number = ? order by b.date asc, b.start_time asc, b.id asc`,
+           where b.cycle_id = ? and b.user_id = ? and b.week_number = ? order by b.date asc, b.start_time asc, b.id asc`,
         )
-        .all(cycleId, weekNumber) as Array<Record<string, unknown>>
+        .all(cycleId, userId, weekNumber) as Array<Record<string, unknown>>
     ).map((row) => ({
       id: String(row.id),
       date: str(row.date),
@@ -101,9 +105,9 @@ export class ReportsService {
 
     const logs = sqlite
       .prepare(
-        'select * from daily_logs where cycle_id = ? and date >= ? and date <= ? order by date asc',
+        'select * from daily_logs where cycle_id = ? and user_id = ? and date >= ? and date <= ? order by date asc',
       )
-      .all(cycleId, String(week.start_date), String(week.end_date)) as Array<
+      .all(cycleId, userId, String(week.start_date), String(week.end_date)) as Array<
       Record<string, unknown>
     >;
 
@@ -114,9 +118,9 @@ export class ReportsService {
            from tactic_entries e
            left join tactics t on t.id = e.tactic_id
            left join goals g on g.id = t.goal_id
-           where e.cycle_id = ? and e.week_number = ? order by e.date asc, e.id asc`,
+           where e.cycle_id = ? and e.user_id = ? and e.week_number = ? order by e.date asc, e.id asc`,
         )
-        .all(cycleId, weekNumber) as Array<Record<string, unknown>>
+        .all(cycleId, userId, weekNumber) as Array<Record<string, unknown>>
     ).map((row) => ({
       id: String(row.id),
       date: row.date ? str(row.date) : null,
@@ -130,9 +134,9 @@ export class ReportsService {
     const review =
       (sqlite
         .prepare(
-          'select * from weekly_reviews where cycle_id = ? and week_number = ?',
+          'select * from weekly_reviews where cycle_id = ? and user_id = ? and week_number = ?',
         )
-        .get(cycleId, weekNumber) as Record<string, unknown> | undefined) ??
+        .get(cycleId, userId, weekNumber) as Record<string, unknown> | undefined) ??
       null;
 
     const offTrack = score.tactic_scores.filter(

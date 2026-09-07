@@ -32,18 +32,21 @@ export class TokensController {
     @Body() dto: CreateTokenDto,
   ): { id: string; token: string; prefix: string } {
     // Plaintext token is returned exactly once — only the hash is stored.
-    return this.auth.createToken(auth.email, dto.name);
+    return this.auth.createToken(auth.userId, auth.email, dto.name);
   }
 
   @Get()
-  list(): { tokens: TokenMeta[] } {
-    // Single-workspace: all tokens, camelCase, never hashes (contract §4).
-    return { tokens: this.auth.listTokens() };
+  list(@Auth() auth: AuthContext): { tokens: TokenMeta[] } {
+    // Per-user: only this user's tokens, camelCase, never hashes.
+    return { tokens: this.auth.listTokens(auth.userId) };
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string): { ok: boolean } {
-    if (!this.auth.revokeToken(id)) {
+  remove(
+    @Auth() auth: AuthContext,
+    @Param('id') id: string,
+  ): { ok: boolean } {
+    if (!this.auth.revokeToken(auth.userId, id)) {
       throw new NotFoundException('not_found');
     }
     return { ok: true };
