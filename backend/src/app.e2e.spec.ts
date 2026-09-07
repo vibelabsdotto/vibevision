@@ -200,6 +200,90 @@ describe('app e2e', () => {
     });
   });
 
+  it('rejects blocks outside the tactic window and pace-scores volume tactics', async () => {
+    const cycleRes = await authed('post', '/v1/cycles').send({
+      title: 'Pace Cycle',
+      start_date: '2026-09-07',
+    });
+    expect(cycleRes.status).toBe(201);
+    const cycleId = cycleRes.body.cycle.id as string;
+    await authed('post', `/v1/cycles/${cycleId}/activate`);
+    const goalRes = await authed('post', '/v1/goals').send({
+      cycle_id: cycleId,
+      title: 'Reach',
+    });
+    expect(goalRes.status).toBe(201);
+    const goalId = goalRes.body.goal.id as string;
+
+    // gh#1: starts_week 2 tactic must reject week-1 blocks (they'd never score).
+    const lateRes = await authed('post', '/v1/tactics').send({
+      goal_id: goalId,
+      title: 'Late start',
+      tracking_type: 'quantity',
+      recurrence_type: 'times_per_week',
+      recurrence_count: 3,
+      target_value: 1,
+      unit: 'items',
+      starts_week: 2,
+    });
+    expect(lateRes.status).toBe(201);
+    const lateId = lateRes.body.tactic.id as string;
+    const badBlock = await authed('post', '/v1/calendar-blocks').send({
+      tactic_id: lateId,
+      date: '2026-09-08',
+      planned_value: 1,
+    });
+    expect(badBlock.status).toBe(400);
+    expect(badBlock.body.error).toBe('bad_request');
+    const okBlock = await authed('post', '/v1/calendar-blocks').send({
+      tactic_id: lateId,
+      date: '2026-09-15',
+      planned_value: 1,
+    });
+    expect(okBlock.status).toBe(201);
+
+    // gh#2: 7x/week volume tactic with 7 daily blocks, 1 log on Monday.
+    const volRes = await authed('post', '/v1/tactics').send({
+      goal_id: goalId,
+      title: 'Daily posts',
+      tracking_type: 'quantity',
+      recurrence_type: 'times_per_week',
+      recurrence_count: 7,
+      target_value: 1,
+      unit: 'posts',
+    });
+    expect(volRes.status).toBe(201);
+    const volId = volRes.body.tactic.id as string;
+    for (let day = 7; day <= 13; day += 1) {
+      const block = await authed('post', '/v1/calendar-blocks').send({
+        tactic_id: volId,
+        date: `2026-09-${String(day).padStart(2, '0')}`,
+        planned_value: 1,
+      });
+      expect(block.status).toBe(201);
+    }
+    const logRes = await authed('post', '/v1/entries/log').send({
+      tactic_id: volId,
+      date: '2026-09-07',
+      value: 1,
+    });
+    expect(logRes.status).toBe(201);
+    const scoreRes = await authed(
+      'get',
+      `/v1/cycles/${cycleId}/score?week=1&as_of=2026-09-07`,
+    );
+    expect(scoreRes.status).toBe(200);
+    // The starts_week-2 tactic stays out of the week-1 scorecard.
+    expect(scoreRes.body.score.tactic_scores).toHaveLength(1);
+    const vol = scoreRes.body.score.tactic_scores[0];
+    expect(vol.tactic_id).toBe(volId);
+    expect(vol.planned).toBe(7);
+    expect(vol.actual).toBe(1);
+    expect(vol.score).toBeCloseTo(1 / 7);
+    // …but its status is pace-aware instead of off_track.
+    expect(vol.status).toBe('on_track');
+  });
+
   it('manages tokens without leaking hashes', async () => {
     const created = await authed('post', '/v1/tokens').send({ name: 'second' });
     expect(created.status).toBe(201);

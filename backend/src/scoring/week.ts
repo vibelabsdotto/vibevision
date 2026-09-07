@@ -254,6 +254,36 @@ function occurrencePaceStatus(
   return statusFromScore(Math.min(actual / paceFloor, 1));
 }
 
+/** Pace status for volume tactics: actual vs exact prorata pace target. */
+export function volumePaceStatus(
+  plan: TacticPlan,
+  weekTarget: number,
+  actual: number,
+  weekStartDate: string | null,
+  weekEndDate: string | null,
+  scoringCutoffDate: string,
+): TrackStatus {
+  if (!weekStartDate || !weekEndDate) {
+    return statusFromScore(
+      weekTarget > 0 ? Math.min(actual / weekTarget, 1) : actual > 0 ? 1 : 0,
+    );
+  }
+  // Nothing due yet (cutoff before the week): can't be behind — mirrors the
+  // occurrence pace floor of 0 resolving to on_track.
+  if (scoringCutoffDate < weekStartDate) return 'on_track';
+  const paceTarget = getPlannedTargetForDate({
+    plan,
+    execution_style: 'volume',
+    full_week_planned: weekTarget,
+    blocks: [],
+    week_start_date: weekStartDate,
+    week_end_date: weekEndDate,
+    scoring_cutoff_date: scoringCutoffDate,
+  });
+  if (paceTarget <= 0) return 'on_track';
+  return statusFromScore(Math.min(actual / paceTarget, 1));
+}
+
 /**
  * Schedule-aware weekly status override (pure, unit-tested).
  * Returns null when the existing pace/score status should stand.
@@ -282,12 +312,11 @@ export function resolveScheduledStatus(input: {
   if (input.actual <= 0 && futureCount === scheduledBlocks.length) {
     return 'coming';
   }
-  if (input.style === 'volume') return null;
   const dueBlocks = scheduledBlocks.filter(
     (block) => block.date <= input.as_of_date,
   );
   const dueByNow =
-    input.style === 'occurrence'
+    input.style === 'occurrence' || input.style === 'volume'
       ? normalizeAmount(
           dueBlocks.reduce((sum, block) => {
             const value = Number(block.planned_value);
@@ -390,7 +419,8 @@ export function scoreTacticsForWeek(input: ScoreInput): TacticWeekScore[] {
       );
       const actual = getActualProgress(plan, tacticEntriesForWeek, style);
       // Toggle: min(doneDueDays/dueDaysElapsed, 1) — actual is already clamped per date.
-      // Occurrence: min(actual/N, 1) with pace status vs floor(N*elapsed/7). Volume: unchanged.
+      // Occurrence: min(actual/N, 1) with pace status vs floor(N*elapsed/7).
+      // Volume: absolute score, pace-aware status (blocks due by now or prorata).
       const score =
         style === 'occurrence'
           ? fullWeekPlanned > 0
@@ -413,7 +443,16 @@ export function scoreTacticsForWeek(input: ScoreInput): TacticWeekScore[] {
               week_start_date,
               scoringCutoffDate,
             )
-          : statusFromScore(score);
+          : style === 'volume'
+            ? volumePaceStatus(
+                plan,
+                fullWeekPlanned,
+                actual,
+                week_start_date,
+                week_end_date,
+                scoringCutoffDate,
+              )
+            : statusFromScore(score);
       const scheduledBlocks = calendar_blocks
         .filter((block) => block.tactic_id === tactic.id)
         .map((block) => ({

@@ -144,6 +144,73 @@ describe('CalendarBlocksService', () => {
     ).toThrow(/after start_time/);
   });
 
+  it('rejects blocks for tactics not active in the target week', () => {
+    const { blocks, db } = setup();
+    const now = new Date().toISOString();
+    db.sqlite
+      .prepare(
+        `insert into tactics (id, user_id, goal_id, title, type, tracking_type, recurrence_type, execution_style,
+          recurrence_count, target_value, unit, target_per_week, target_per_day, scoring_weight,
+          starts_week, ends_week, active, sort_order, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'tactic-2',
+        USER_A,
+        'goal-1',
+        'T2',
+        'habit',
+        'quantity',
+        'times_per_week',
+        'volume',
+        1,
+        3,
+        'assets',
+        0,
+        0,
+        1,
+        2,
+        null,
+        1,
+        1,
+        now,
+        now,
+      );
+    // starts_week: 2 — a week-1 block would never score, so creation rejects.
+    expect(() =>
+      blocks.create(USER_A, {
+        tactic_id: 'tactic-2',
+        date: '2026-09-02',
+        planned_value: 1,
+      }),
+    ).toThrow(/not active in week 1/);
+    // The active week itself still works.
+    const ok = blocks.create(USER_A, {
+      tactic_id: 'tactic-2',
+      date: '2026-09-08',
+      planned_value: 1,
+    });
+    expect(ok.week_number).toBe(2);
+    // Moving the block back into the inactive week rejects as well.
+    expect(() =>
+      blocks.move(USER_A, { block_id: ok.id, to_date: '2026-09-03' }),
+    ).toThrow(/not active in week 1/);
+    // A schedule `required` override re-includes the tactic, mirroring the
+    // scorer — then week-1 blocks are accepted again.
+    db.sqlite
+      .prepare(
+        `insert into tactic_schedules (id, user_id, tactic_id, week_number, planned_target, required, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('sched-1', USER_A, 'tactic-2', 1, 3, 1, now, now);
+    const overridden = blocks.create(USER_A, {
+      tactic_id: 'tactic-2',
+      date: '2026-09-02',
+      planned_value: 1,
+    });
+    expect(overridden.week_number).toBe(1);
+  });
+
   it('isolates blocks per user (controller: GET/LIST/PUT/DELETE/move)', () => {
     const { blocks, tacticId } = setup();
     const owned = blocks.create(USER_A, {

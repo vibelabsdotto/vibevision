@@ -9,6 +9,7 @@ import { currentWeekNumber } from '../scores/scores.service';
 import {
   getPlannedWeeklyTarget,
   getSchedulingProgress,
+  isTacticActiveInWeek,
   resolveExecutionStyle,
   resolveTacticPlan,
 } from '../tactics/plan';
@@ -114,12 +115,13 @@ export class CalendarService {
     ).filter((row) => toBool(row.active));
     const schedules = sqlite
       .prepare(
-        'select tactic_id, week_number, planned_target from tactic_schedules where user_id = ?',
+        'select tactic_id, week_number, planned_target, required from tactic_schedules where user_id = ?',
       )
       .all(userId) as Array<{
       tactic_id: string;
       week_number: number;
       planned_target: number | null;
+      required: number;
     }>;
     const weeks = sqlite
       .prepare(
@@ -156,10 +158,35 @@ export class CalendarService {
           schedule.planned_target ?? baseWeekTarget,
         );
       }
+      // A tactic the week score would exclude must not advertise scheduling
+      // room for the reference week (block writes there are rejected).
+      const refSchedule =
+        referenceWeek === null
+          ? undefined
+          : schedules.find(
+              (schedule) =>
+                schedule.tactic_id === String(row.id) &&
+                schedule.week_number === referenceWeek,
+            );
+      const activeInRefWeek =
+        referenceWeek === null ||
+        isTacticActiveInWeek(
+          {
+            starts_week: (row.starts_week as number) ?? null,
+            ends_week: (row.ends_week as number) ?? null,
+            active: true,
+          },
+          referenceWeek,
+          refSchedule ? { required: toBool(refSchedule.required) } : null,
+        );
       const progress = getSchedulingProgress(
         plan,
         tacticBlocks,
-        referenceWeek === null ? undefined : weekTargets[referenceWeek],
+        referenceWeek === null
+          ? undefined
+          : activeInRefWeek
+            ? weekTargets[referenceWeek]
+            : 0,
       );
       return {
         id: String(row.id),

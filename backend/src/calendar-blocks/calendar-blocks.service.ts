@@ -9,6 +9,7 @@ import { isIsoDate, newId, normalizeAmount, nowIso, str } from '../common/util';
 import { DatabaseService } from '../database/database.service';
 import {
   loadTacticWithPlan,
+  assertTacticActiveInWeek,
   resolveBucket,
   scheduledSum,
   weeklyTarget,
@@ -261,6 +262,7 @@ export class CalendarBlocksService {
         message: 'Calendar block cycle does not match its tactic',
       });
     }
+    assertTacticActiveInWeek(sqlite, tactic, bucket.weekNumber, userId);
     const validated = this.validateBlock(body ?? {}, plan, style);
 
     const scheduled = scheduledSum(
@@ -327,6 +329,7 @@ export class CalendarBlocksService {
     const tacticId = String(existing.tactic_id);
     const { tactic, plan, style } = loadTacticWithPlan(sqlite, tacticId, userId);
     const bucket = resolveBucket(sqlite, tactic, date, userId);
+    assertTacticActiveInWeek(sqlite, tactic, bucket.weekNumber, userId);
     const merged = { ...existing, ...(body as Record<string, unknown>), date };
     const validated = this.validateBlock(merged, plan, style);
 
@@ -443,6 +446,7 @@ export class CalendarBlocksService {
         message: 'Target date is not inside the cycle',
       });
     }
+    assertTacticActiveInWeek(sqlite, tactic, bucket.weekNumber, userId);
     // Value rules (size/toggle/occurrence); budget is checked below
     // against the DESTINATION week.
     this.validateBlock(

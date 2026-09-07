@@ -9,7 +9,9 @@ import {
   getTacticExecutionScore,
   getTodayProgress,
   resolveScheduledStatus,
+  scoreTacticsForWeek,
   statusFromScore,
+  volumePaceStatus,
 } from './week';
 
 /**
@@ -602,21 +604,49 @@ describe('resolveScheduledStatus', () => {
     };
     expect(resolveScheduledStatus(input)).toBe('warning');
   });
-  it('keeps volume on its score status (null) past the coming check', () => {
+  it('compares actual vs due-by-now values for volume', () => {
+    const volume = {
+      ...base,
+      style: 'volume' as const,
+      full_week_planned: 7,
+      planned: 7,
+    };
+    // Untouched and everything in the future → still coming.
     expect(
       resolveScheduledStatus({
-        ...base,
-        style: 'volume',
-        scheduled_dates: ['2026-09-01'],
-      }),
-    ).toBeNull();
-    expect(
-      resolveScheduledStatus({
-        ...base,
-        style: 'volume',
+        ...volume,
         scheduled_dates: ['2026-09-05'],
       }),
     ).toBe('coming');
+    // Due value fully done → on_track.
+    expect(
+      resolveScheduledStatus({
+        ...volume,
+        actual: 2,
+        scheduled_dates: ['2026-09-01'],
+        scheduled_blocks: [{ date: '2026-09-01', planned_value: 2 }],
+      }),
+    ).toBe('on_track');
+    // Due value partially done → warning.
+    expect(
+      resolveScheduledStatus({
+        ...volume,
+        actual: 1,
+        scheduled_dates: ['2026-09-01'],
+        scheduled_blocks: [{ date: '2026-09-01', planned_value: 2 }],
+      }),
+    ).toBe('warning');
+    // Due value untouched → off_track.
+    expect(
+      resolveScheduledStatus({
+        ...volume,
+        scheduled_dates: ['2026-09-01', '2026-09-05'],
+        scheduled_blocks: [
+          { date: '2026-09-01', planned_value: 1 },
+          { date: '2026-09-05', planned_value: 1 },
+        ],
+      }),
+    ).toBe('off_track');
   });
   it('marks toggles coming when their day is still ahead', () => {
     expect(
@@ -627,5 +657,117 @@ describe('resolveScheduledStatus', () => {
         scheduled_dates: ['2026-09-05'],
       }),
     ).toBe('coming');
+  });
+});
+
+describe('volumePaceStatus', () => {
+  const plan: TacticPlan = {
+    trackingType: 'quantity',
+    recurrenceType: 'times_per_week',
+    recurrenceCount: 1,
+    targetValue: 7,
+    unit: 'posts',
+  };
+  const start = '2026-09-07';
+  const end = '2026-09-13';
+  it('is on_track when nothing is due yet', () => {
+    expect(volumePaceStatus(plan, 7, 0, start, end, '2026-09-06')).toBe(
+      'on_track',
+    );
+  });
+  it('compares actual vs the prorata pace mid-week', () => {
+    // Cutoff Tue (day 2 of 7): pace target is 7 * 2/7 = 2.
+    expect(volumePaceStatus(plan, 7, 2, start, end, '2026-09-08')).toBe(
+      'on_track',
+    );
+    expect(volumePaceStatus(plan, 7, 1, start, end, '2026-09-08')).toBe(
+      'off_track',
+    );
+  });
+  it('uses the full target once the week is over', () => {
+    expect(volumePaceStatus(plan, 7, 6, start, end, '2026-09-14')).toBe(
+      'on_track',
+    );
+    expect(volumePaceStatus(plan, 7, 5, start, end, '2026-09-14')).toBe(
+      'warning',
+    );
+    expect(volumePaceStatus(plan, 7, 4, start, end, '2026-09-14')).toBe(
+      'off_track',
+    );
+  });
+});
+
+describe('scoreTacticsForWeek volume pacing', () => {
+  const tacticRow = {
+    tactic: {
+      id: 't-vol',
+      goal_id: 'g1',
+      title: '7 Posts',
+      type: 'weekly_count',
+      tracking_type: 'quantity',
+      recurrence_type: 'times_per_week',
+      execution_style: 'volume',
+      recurrence_count: 1,
+      target_value: 7,
+      target_per_week: 7,
+      target_per_day: null,
+      unit: 'posts',
+      scoring_weight: 1,
+      starts_week: 1,
+      ends_week: null,
+      active: true,
+      sort_order: 0,
+    },
+    goal_title: 'Marketing',
+  };
+  const monday = new Date(Date.UTC(2026, 8, 7));
+  const weekBlocks = Array.from({ length: 7 }, (_, i) => {
+    const date = new Date(monday);
+    date.setUTCDate(date.getUTCDate() + i);
+    return {
+      tactic_id: 't-vol',
+      date: date.toISOString().slice(0, 10),
+      planned_value: 1,
+    };
+  });
+  const baseInput = {
+    week_number: 1,
+    as_of_date: '2026-09-07',
+    tactic_rows: [tacticRow],
+    schedule_rows: [],
+    week_start_date: '2026-09-07',
+    week_end_date: '2026-09-13',
+    has_snapshot: false,
+  };
+  it('marks a perfectly on-pace volume tactic on_track (not off_track)', () => {
+    const rows = scoreTacticsForWeek({
+      ...baseInput,
+      tactic_rows: [...baseInput.tactic_rows],
+      calendar_blocks: weekBlocks,
+      entries: [
+        { tactic_id: 't-vol', date: '2026-09-07', value: 1, completed: false },
+      ],
+    });
+    expect(rows).toHaveLength(1);
+    // The absolute week score is unchanged — only the status is pace-aware.
+    expect(rows[0]?.planned).toBe(7);
+    expect(rows[0]?.actual).toBe(1);
+    expect(rows[0]?.score).toBeCloseTo(1 / 7);
+    expect(rows[0]?.status).toBe('on_track');
+  });
+  it('keeps a blockless volume tactic on_track before anything is due', () => {
+    const rows = scoreTacticsForWeek({
+      ...baseInput,
+      tactic_rows: [...baseInput.tactic_rows],
+      calendar_blocks: [],
+      entries: [
+        { tactic_id: 't-vol', date: '2026-09-07', value: 1, completed: false },
+      ],
+    });
+    // No blocks: status falls back to the prorata pace (cutoff is still
+    // before the week, so nothing is due yet).
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.score).toBeCloseTo(1 / 7);
+    expect(rows[0]?.status).toBe('on_track');
   });
 });

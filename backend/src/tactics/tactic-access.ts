@@ -1,8 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
 import type Database from 'better-sqlite3';
-import { normalizeAmount } from '../common/util';
+import { normalizeAmount, toBool } from '../common/util';
 import {
   getPlannedWeeklyTarget,
+  isTacticActiveInWeek,
   resolveExecutionStyle,
   resolveTacticPlan,
   type ExecutionStyle,
@@ -22,6 +23,9 @@ export interface TacticRow {
   target_per_week: number;
   target_per_day: number;
   unit: string;
+  starts_week: number | null;
+  ends_week: number | null;
+  active: number;
 }
 
 export interface TacticBucket {
@@ -158,4 +162,38 @@ export function scheduledSum(
       return v > 0 ? sum + v : sum;
     }, 0),
   );
+}
+
+/**
+ * Reject scheduling writes for a tactic that the week score would exclude.
+ * Mirrors the scorer's activity check (schedule `required` override wins,
+ * else starts_week/ends_week/active) so blocks and scores can never disagree
+ * about whether a tactic exists in a week.
+ */
+export function assertTacticActiveInWeek(
+  sqlite: Database.Database,
+  tactic: TacticRow,
+  weekNumber: number,
+  userId: string,
+): void {
+  const schedule = sqlite
+    .prepare(
+      'select required from tactic_schedules where tactic_id = ? and week_number = ? and user_id = ?',
+    )
+    .get(tactic.id, weekNumber, userId) as { required: number } | undefined;
+  const active = isTacticActiveInWeek(
+    {
+      starts_week: tactic.starts_week,
+      ends_week: tactic.ends_week,
+      active: tactic.active === 1,
+    },
+    weekNumber,
+    schedule ? { required: toBool(schedule.required) } : null,
+  );
+  if (!active) {
+    throw new BadRequestException({
+      error: 'bad_request',
+      message: `Tactic is not active in week ${weekNumber}`,
+    });
+  }
 }
