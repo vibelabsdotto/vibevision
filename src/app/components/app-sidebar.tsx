@@ -12,7 +12,8 @@ import {
   NotebookPen,
   PanelLeft,
   PanelLeftClose,
-  Repeat
+  Repeat,
+  Settings
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -156,6 +157,14 @@ export function AppSidebar({ user }: { user: SidebarUser }) {
                   >
                     <ExternalLink aria-hidden size={16} />
                     VibeLabs
+                  </Link>
+                  <Link
+                    className="flex w-full items-center gap-2 rounded-[8px] px-2 py-2 transition hover:bg-surface-2"
+                    href="/settings/tokens"
+                    prefetch={false}
+                  >
+                    <Settings aria-hidden size={16} />
+                    Settings
                   </Link>
                   <div className="my-1 h-px bg-border" />
                   <form action="/logout" method="post">

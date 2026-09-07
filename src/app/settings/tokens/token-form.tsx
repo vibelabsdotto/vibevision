@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { ApiError, apiFetch } from "@/app/lib/api";
+import { createTokenAction } from "./actions";
 
 export function TokenForm() {
   const [name, setName] = useState("");
@@ -16,14 +16,13 @@ export function TokenForm() {
     setError(null);
     setToken(null);
     try {
-      const data = await apiFetch<{ id: string; token: string; prefix: string }>("/v1/tokens", {
-        method: "POST",
-        body: { name: name.trim() || `cli-${new Date().toISOString().slice(0, 10)}`}
-      });
+      // Creation runs as a Server Action (session cookie forwarded
+      // server-to-server) — the browser never calls /v1/* cross-site.
+      const data = await createTokenAction(name);
       setToken(data.token);
       setName("");
     } catch (cause) {
-      setError(cause instanceof ApiError ? `${cause.status}: ${cause.code}` : "Creation failed");
+      setError(cause instanceof Error ? cause.message : "Creation failed");
     } finally {
       setLoading(false);
     }

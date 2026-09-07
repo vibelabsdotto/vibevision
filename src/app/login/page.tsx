@@ -35,9 +35,9 @@ export default function LoginPage() {
         <p className="eyebrow">VibeVision</p>
         <h1 className="mt-2 font-display text-3xl tracking-tight">Sign in</h1>
         <p className="mt-2 text-sm text-ink-2">
-          Single-user 12 Week Year execution OS. Ask your operator for an account.
+          12 Week Year execution OS. Ask your operator for an account.
         </p>
-        <form className="mt-6 space-y-4" onSubmit={onSubmit}>
+        <form className="mt-6 space-y-4" method="post" onSubmit={onSubmit}>
           <label className="block text-sm text-ink-2">
             Email
             <input

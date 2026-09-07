@@ -5,7 +5,12 @@ import { apiUrl } from "@/app/lib/env";
 /**
  * Logout endpoint. Called as form POST from the sidebar.
  * Signs out against the API (clears the server session) and redirects to /login.
+ * A plain GET also redirects to /login (no error) so direct visits behave sanely.
  */
+export async function GET() {
+  redirect("/login");
+}
+
 export async function POST() {
   const jar = await cookies();
   try {
