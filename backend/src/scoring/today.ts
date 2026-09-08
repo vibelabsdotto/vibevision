@@ -280,12 +280,13 @@ export function buildTodayTactics(
             0,
           ),
         );
-        const hasScheduledToday = scheduledTodayTarget > 0;
+        const hasScheduledToday = scheduledBlocks.length > 0;
         const isRecurringToday =
           !hasScheduledToday &&
           (weekTarget > 0 || score.actual > 0) &&
           (plan.recurrenceType === 'daily' ||
             (plan.recurrenceType === 'weekdays' && isWeekdayDate(date)));
+        const hasTodayTarget = hasScheduledToday || isRecurringToday;
         const todayTarget = hasScheduledToday
           ? scheduledTodayTarget
           : isRecurringToday
@@ -300,9 +301,9 @@ export function buildTodayTactics(
           remaining,
           is_complete: isComplete,
           today_actual: todayActual,
-          today_target: todayTarget > 0 ? todayTarget : null,
-          today_remaining: todayTarget > 0 ? todayRemaining : weekRemaining,
-          is_today_complete: todayTarget > 0 && todayRemaining === 0,
+          today_target: hasTodayTarget ? todayTarget : null,
+          today_remaining: hasTodayTarget ? todayRemaining : weekRemaining,
+          is_today_complete: hasTodayTarget && todayRemaining === 0,
           due_today: todayTarget > 0 && todayRemaining > 0,
           today_kind: hasScheduledToday
             ? 'scheduled'
@@ -336,7 +337,7 @@ export function buildTodayTactics(
         ),
       );
       const recurringTarget = getOccurrenceTarget(plan);
-      const hasScheduledToday = scheduledTodayTarget > 0;
+      const hasScheduledToday = scheduledBlocks.length > 0;
       const isRecurringToday =
         !hasScheduledToday &&
         (score.full_week_planned > 0 || score.actual > 0) &&
@@ -350,7 +351,8 @@ export function buildTodayTactics(
       const todayRemaining = normalizeAmount(
         Math.max(todayTarget - todayActual, 0),
       );
-      const isTodayComplete = todayTarget > 0 && todayRemaining === 0;
+      const isTodayComplete =
+        (hasScheduledToday || isRecurringToday) && todayRemaining === 0;
       const dueToday =
         (hasScheduledToday || isRecurringToday) && !isTodayComplete;
       const todayKind = hasScheduledToday

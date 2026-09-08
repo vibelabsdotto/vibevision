@@ -16,6 +16,7 @@ import {
 import { getOccurrenceTarget, isWeekdayDate } from '../scoring/today';
 import { getTodayProgress } from '../scoring/week';
 import { DatabaseService } from '../database/database.service';
+import { getWeekExecutionBlocks } from '../calendar/execution-blocks';
 import type { Tactic, TacticBody, TacticListQuery } from './tactics.dto';
 import {
   EXECUTION_STYLES,
@@ -136,7 +137,10 @@ function optWeek(v: unknown, name: string): number | null {
 export class TacticsService {
   constructor(private readonly database: DatabaseService) {}
 
-  list(userId: string, query: TacticListQuery): {
+  list(
+    userId: string,
+    query: TacticListQuery,
+  ): {
     tactics: Tactic[];
     total: number;
     page: number;
@@ -403,23 +407,15 @@ export class TacticsService {
       )
       .get(id, week.week_number, userId) as
       { planned_target: number | null; required: number } | undefined;
-    const blockRows = sqlite
-      .prepare(
-        `select planned_value from tactic_calendar_blocks
-         where cycle_id = ? and week_number = ? and tactic_id = ? and date = ? and user_id = ?`,
-      )
-      .all(cycleId, week.week_number, id, date, userId) as Array<{
-      planned_value: number;
-    }>;
+    const blockRows = getWeekExecutionBlocks(
+      sqlite,
+      userId,
+      cycleId,
+      week.week_number,
+      date,
+    ).filter((block) => block.tactic_id === id && block.date === date);
     const scheduledTarget = normalizeAmount(
-      blockRows.reduce(
-        (sum, block) =>
-          sum +
-          (Number.isFinite(Number(block.planned_value))
-            ? Number(block.planned_value)
-            : 0),
-        0,
-      ),
+      blockRows.reduce((sum, block) => sum + block.scheduled_value, 0),
     );
     const entryRows = sqlite
       .prepare(
@@ -455,20 +451,21 @@ export class TacticsService {
           week.week_number,
           null,
         );
+    // A scheduled block with no remaining work still overrides recurrence.
+    const hasScheduledToday = blockRows.length > 0;
     const recurringToday =
-      scheduledTarget <= 0 &&
+      !hasScheduledToday &&
       weekTarget > 0 &&
       activeInWeek &&
       (plan.recurrenceType === 'daily' ||
         (plan.recurrenceType === 'weekdays' && isWeekdayDate(date)));
-    const todayTarget =
-      scheduledTarget > 0
-        ? scheduledTarget
-        : recurringToday
-          ? style === 'toggle'
-            ? 1
-            : getOccurrenceTarget(plan)
-          : null;
+    const todayTarget = hasScheduledToday
+      ? scheduledTarget
+      : recurringToday
+        ? style === 'toggle'
+          ? 1
+          : getOccurrenceTarget(plan)
+        : null;
     return {
       tactic,
       execution_style: style,

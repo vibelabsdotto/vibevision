@@ -15,6 +15,7 @@ import {
   toBool,
 } from '../common/util';
 import { DatabaseService } from '../database/database.service';
+import { getWeekExecutionBlocks } from '../calendar/execution-blocks';
 import {
   loadTacticWithPlan,
   resolveBucket,
@@ -94,22 +95,22 @@ export function dailyTarget(
   bucket: TacticBucket,
   date: string,
   userId: string,
+  excludeEntryId?: string | null,
 ): number {
-  const rows = sqlite
-    .prepare(
-      `select planned_value from tactic_calendar_blocks
-       where tactic_id = ? and cycle_id = ? and week_number = ? and date = ? and user_id = ?`,
-    )
-    .all(bucket.tactic.id, bucket.cycleId, bucket.weekNumber, date, userId) as Array<{
-    planned_value: number;
-  }>;
-  const scheduled = normalizeAmount(
-    rows.reduce((sum, row) => {
-      const v = normalizeAmount(Number(row.planned_value));
-      return v > 0 ? sum + v : sum;
-    }, 0),
+  const rows = getWeekExecutionBlocks(
+    sqlite,
+    userId,
+    bucket.cycleId,
+    bucket.weekNumber,
+    date,
+    excludeEntryId,
+  ).filter(
+    (block) => block.tactic_id === bucket.tactic.id && block.date === date,
   );
-  if (scheduled > 0) return scheduled;
+  const scheduled = normalizeAmount(
+    rows.reduce((sum, row) => sum + row.scheduled_value, 0),
+  );
+  if (rows.length > 0) return scheduled;
   if (bucket.plan.recurrenceType === 'daily') return bucket.plan.targetValue;
   if (bucket.plan.recurrenceType === 'weekdays') {
     const weekday = new Date(`${date}T00:00:00.000Z`).getUTCDay();
@@ -131,7 +132,9 @@ export function actualForDate(
       `select value, completed from tactic_entries where tactic_id = ? and date = ? and user_id = ?${excludeId ? ' and id != ?' : ''}`,
     )
     .all(
-      ...(excludeId ? [tacticId, date, userId, excludeId] : [tacticId, date, userId]),
+      ...(excludeId
+        ? [tacticId, date, userId, excludeId]
+        : [tacticId, date, userId]),
     ) as Array<{ value: number; completed: number }>;
   return normalizeAmount(
     rows.reduce((sum, row) => sum + entryCountValue(row, null), 0),
@@ -158,7 +161,10 @@ function entryCountValue(
 export class EntriesService {
   constructor(private readonly database: DatabaseService) {}
 
-  list(userId: string, query: TacticEntryListQuery): {
+  list(
+    userId: string,
+    query: TacticEntryListQuery,
+  ): {
     tactic_entries: TacticEntry[];
     total: number;
     page: number;
@@ -236,7 +242,9 @@ export class EntriesService {
 
   get(userId: string, id: string): TacticEntry {
     const row = this.database.sqlite
-      .prepare(`select ${COLUMNS} from tactic_entries where id = ? and user_id = ?`)
+      .prepare(
+        `select ${COLUMNS} from tactic_entries where id = ? and user_id = ?`,
+      )
       .get(id, userId) as Record<string, unknown> | undefined;
     if (!row) throw new NotFoundException('not_found');
     return rowToEntry(row);
@@ -273,7 +281,9 @@ export class EntriesService {
     assertNoUnknown((body ?? {}) as Record<string, unknown>, UPDATE_FIELDS);
     const sqlite = this.database.sqlite;
     const existing = sqlite
-      .prepare(`select ${COLUMNS} from tactic_entries where id = ? and user_id = ?`)
+      .prepare(
+        `select ${COLUMNS} from tactic_entries where id = ? and user_id = ?`,
+      )
       .get(id, userId) as Record<string, unknown> | undefined;
     if (!existing) throw new NotFoundException('not_found');
     const merged = { ...(body as Record<string, unknown>) };
@@ -330,7 +340,11 @@ export class EntriesService {
    * Undo the latest entry for a tactic+date (port of core undoLatestTacticEntry):
    * value > 1 → decrement, == 1 → delete, otherwise nothing to undo.
    */
-  undo(userId: string, tacticId: string, date: string): { undone: string | null } {
+  undo(
+    userId: string,
+    tacticId: string,
+    date: string,
+  ): { undone: string | null } {
     if (!str(tacticId)) {
       throw new BadRequestException({
         error: 'bad_request',
@@ -347,7 +361,8 @@ export class EntriesService {
       .prepare(
         'select * from tactic_entries where tactic_id = ? and date = ? and user_id = ? order by created_at desc, id desc limit 1',
       )
-      .get(str(tacticId), str(date), userId) as Record<string, unknown> | undefined;
+      .get(str(tacticId), str(date), userId) as
+      Record<string, unknown> | undefined;
     if (!latest) return { undone: null };
     const latestValue = normalizeAmount(Number(latest.value));
     if (latestValue > 1) {
@@ -396,7 +411,11 @@ export class EntriesService {
         message: 'date must be YYYY-MM-DD',
       });
     }
-    const { tactic, plan, style } = loadTacticWithPlan(sqlite, tacticId, userId);
+    const { tactic, plan, style } = loadTacticWithPlan(
+      sqlite,
+      tacticId,
+      userId,
+    );
     const bucket = resolveBucket(sqlite, tactic, date, userId);
     if (body.cycle_id !== undefined && str(body.cycle_id) !== bucket.cycleId) {
       throw new BadRequestException({
@@ -460,7 +479,13 @@ export class EntriesService {
           : storedValue;
     const projected = normalizeAmount(before + counted);
     const target = normalizeAmount(
-      dailyTarget(sqlite, { tactic, plan, style, ...bucket }, date, userId),
+      dailyTarget(
+        sqlite,
+        { tactic, plan, style, ...bucket },
+        date,
+        userId,
+        excludeId,
+      ),
     );
     if (projected < 0) {
       throw new BadRequestException({

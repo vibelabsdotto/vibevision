@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { isIsoDate, normalizeAmount, str, toBool } from '../common/util';
 import { DatabaseService } from '../database/database.service';
+import { getWeekExecutionBlocks } from './execution-blocks';
 import { currentWeekNumber } from '../scores/scores.service';
 import {
   getPlannedWeeklyTarget,
@@ -28,6 +29,8 @@ export interface CalendarBlockWithTitles {
   tactic_title: string;
   goal_title: string;
   unit: string;
+  original_date?: string;
+  scheduled_value?: number;
 }
 
 export interface SchedulingItem {
@@ -133,6 +136,43 @@ export class CalendarService {
       end_date: string;
     }>;
     const referenceWeek = currentWeekNumber(weeks, from);
+    const today = new Date().toISOString().slice(0, 10);
+    const executionWeek = weeks.find(
+      (week) => week.start_date <= today && week.end_date >= today,
+    );
+    if (
+      executionWeek &&
+      executionWeek.start_date <= to &&
+      executionWeek.end_date >= from
+    ) {
+      const executionBlocks = getWeekExecutionBlocks(
+        sqlite,
+        userId,
+        cycleId,
+        executionWeek.week_number,
+        today,
+      );
+      // Load the whole source week before filtering the requested display
+      // range: a Monday block can now appear in a Tuesday-only request.
+      const visible = blocks.filter(
+        (block) => block.week_number !== executionWeek.week_number,
+      );
+      visible.push(
+        ...executionBlocks.filter(
+          (block) => block.date >= from && block.date <= to,
+        ),
+      );
+      visible.sort(
+        (a, b) =>
+          a.date.localeCompare(b.date) ||
+          (a.start_time ?? '').localeCompare(b.start_time ?? '') ||
+          (a.original_date ?? a.date).localeCompare(
+            b.original_date ?? b.date,
+          ) ||
+          a.id.localeCompare(b.id),
+      );
+      blocks.splice(0, blocks.length, ...visible);
+    }
 
     const scheduling: SchedulingItem[] = tacticRows.map((row) => {
       const plan = resolveTacticPlan({

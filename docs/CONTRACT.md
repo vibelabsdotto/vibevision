@@ -59,6 +59,8 @@ Von Better Auth verwaltet (Drizzle-Adapter). Nicht manuell verändern.
 
 `id` PK, `tactic_id` NOT NULL → CASCADE, `cycle_id` NOT NULL → CASCADE, `week_number` INTEGER NOT NULL, `date` NOT NULL (ISO-Datum), `start_time`/`end_time` NULL (`HH:MM`), `duration_minutes` INTEGER NULL, `planned_value` REAL NOT NULL, `note` DEFAULT `''`, timestamps. Index (`cycle_id`,`week_number`). **Write-Regeln = Port von `calendarExecute`:** Block > 0 (normalisiert, sonst 400); Cycle/Woche müssen zu Taktik+Datum passen; Toggles nicht planbar; Occurrence-Blöcke ganzzahlig; Wochenbudget (`planned_target` bzw. Basis-Target) darf nicht überschritten werden.
 
+Der Kalender zeigt offene Blöcke der aktuellen UTC-Woche am heutigen Tag. Die API berechnet dieses Weiterrollen beim Lesen, ohne gespeicherte Blöcke oder Scores umzuschreiben. Fortschritt wird pro Taktik und Woche den ältesten Blöcken zuerst zugeordnet. `planned_value` bleibt die ursprüngliche Budgetmenge, `original_date` das geplante Datum, `scheduled_value` die am angezeigten Datum fällige Menge nach Abzug vorheriger Tage. Erledigte Blöcke rollen nicht weiter; nachgeholte Blöcke bleiben innerhalb der laufenden Woche auf ihrem Erledigungstag. Keine Übernahme aus abgeschlossenen Wochen. Kalender, Dashboard, Today-State und Entry-Tageslimit nutzen dieselbe Berechnung. Toggles und ungeplante Wochen-Pools erzeugen keine zusätzlichen Kalenderblöcke.
+
 ### Tabelle `daily_logs`
 
 `id` PK, `cycle_id` NOT NULL → CASCADE, `date` NOT NULL, `one_thing` DEFAULT `''`, `morning_done`/`evening_done` INTEGER DEFAULT `0`, `stress_level`/`agency_score` INTEGER NULL, `comfort_zone_done` INTEGER DEFAULT `0`, `deep_work_minutes` INTEGER NULL, `avoidance_trigger`/`private_victories`/`notes` DEFAULT `''`, UNIQUE(`cycle_id`,`date`), timestamps.
@@ -135,6 +137,7 @@ Alle Responses JSON. Fehler flach `{ error: string }`. Codes: `unauthorized` 401
 - API-Client `apiFetch` (Session-Cookie-Passthrough serverseitig), `NEXT_PUBLIC_API_URL` (Build-Arg) + `NEXT_PUBLIC_WEB_URL`. Serverseitige Env `API_URL` für SSR.
 - Auth via Better-Auth-Client gegen API (`/api/auth`); `/login` umgebaut; kein PB-SDK mehr (`pocketbase`-Dep entfällt).
 - `src/app/core/*` wird dünn: API-Calls + Render-Formatierung; Scoring/Validierung lebt in der API.
+- `/calendar` zeigt ausschließlich die aktuelle Montag-bis-Sonntag-Woche mit `Week X of 12` aus `cycle_weeks`. Keine Monatsansicht oder Navigation in andere Wochen. Nur für diese Woche aktive, planbare Taktiken stehen im Scheduling-Bereich. Außerhalb des aktiven Cycles bleibt die aktuelle Woche sichtbar, ohne auf eine Cycle-Grenze zu springen. Tageswechsel und Rückkehr zum Tab aktualisieren die Ansicht.
 - Neu: `/settings/tokens` (Token-Self-Service für CLI).
 - `export const dynamic = 'force-dynamic'` auf Seiten mit Session-Zugriff.
 

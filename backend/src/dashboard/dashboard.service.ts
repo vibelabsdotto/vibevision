@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { toBool } from '../common/util';
 import { DatabaseService } from '../database/database.service';
+import { getWeekExecutionBlocks } from '../calendar/execution-blocks';
 import { ScoresService, currentWeekNumber } from '../scores/scores.service';
 import {
   buildTodayTactics,
@@ -123,20 +124,21 @@ export class DashboardService {
       completed: toBool(row.completed),
     }));
 
-    const weekBlocks: TodayBlockRow[] = (
-      sqlite
-        .prepare(
-          'select * from tactic_calendar_blocks where cycle_id = ? and user_id = ? and week_number = ? order by date asc, start_time asc, id asc',
-        )
-        .all(cycleId, userId, currentWeek) as Array<Record<string, unknown>>
-    ).map((row) => ({
+    const executionBlocks = getWeekExecutionBlocks(
+      sqlite,
+      userId,
+      cycleId,
+      currentWeek,
+      asOf,
+    );
+    const weekBlocks: TodayBlockRow[] = executionBlocks.map((row) => ({
       id: String(row.id),
       tactic_id: String(row.tactic_id),
       date: String(row.date),
       start_time: (row.start_time as string) ?? null,
       end_time: (row.end_time as string) ?? null,
       duration_minutes: (row.duration_minutes as number) ?? null,
-      planned_value: Number(row.planned_value),
+      planned_value: row.scheduled_value,
       note: (row.note as string) ?? null,
     }));
 
@@ -161,7 +163,10 @@ export class DashboardService {
       })),
       entries: weekEntries,
       today_blocks: todayBlocks,
-      week_blocks: weekBlocks,
+      week_blocks: executionBlocks.map((block) => ({
+        ...block,
+        date: block.original_date,
+      })),
       as_of_date: today,
     });
     const todayTactics = buildTodayTactics(
@@ -220,7 +225,11 @@ export class DashboardService {
         .prepare(
           'select id, type, created_at from events where cycle_id = ? and user_id = ? order by created_at desc limit 10',
         )
-        .all(cycleId, userId) as Array<{ id: string; type: string; created_at: string }>
+        .all(cycleId, userId) as Array<{
+        id: string;
+        type: string;
+        created_at: string;
+      }>
     ).map((row) => ({
       id: row.id,
       type: row.type,

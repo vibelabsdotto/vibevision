@@ -9,6 +9,8 @@ export type CalendarBlockWithTitle = {
   cycleId: string;
   weekNumber: number;
   date: string;
+  originalDate?: string | null;
+  scheduledValue?: number | null;
   startTime: string | null;
   endTime: string | null;
   durationMinutes: number | null;
@@ -41,7 +43,7 @@ function executionStyleOf(input: { executionStyle?: string | null; trackingType?
   return input.trackingType === "boolean" ? "toggle" : "volume";
 }
 
-function formatMeta(block: Pick<CalendarBlockWithTitle, "startTime" | "endTime" | "durationMinutes" | "plannedValue" | "unit">): string | null {
+function formatMeta(block: Pick<CalendarBlockWithTitle, "startTime" | "endTime" | "durationMinutes" | "plannedValue" | "scheduledValue" | "unit">): string | null {
   const parts: string[] = [];
   if (block.startTime) {
     parts.push(block.endTime ? `${block.startTime}–${block.endTime}` : block.startTime);
@@ -49,8 +51,9 @@ function formatMeta(block: Pick<CalendarBlockWithTitle, "startTime" | "endTime" 
   if (block.durationMinutes != null) {
     parts.push(`${block.durationMinutes}m`);
   }
-  if (Number.isFinite(block.plannedValue) && block.plannedValue > 0) {
-    parts.push(`${block.plannedValue} ${block.unit ?? "units"}`);
+  const displayedValue = block.scheduledValue ?? block.plannedValue;
+  if (Number.isFinite(displayedValue) && displayedValue > 0) {
+    parts.push(`${displayedValue} ${block.unit ?? "units"}`);
   }
   return parts.length ? parts.join(" · ") : null;
 }
@@ -97,6 +100,11 @@ export function CalendarBlockCard(props: CardProps) {
       <span className="min-w-0 flex-1">
         <span className="block truncate text-xs font-medium text-ink">{title}</span>
         {meta ? <span className="block truncate font-mono text-[10px] tracking-wide text-ink-3">{meta}</span> : null}
+        {props.variant === "scheduled" && props.block.originalDate && props.block.originalDate !== props.block.date ? (
+          <span className="block font-mono text-[10px] tracking-wide text-ink-3">
+            Rolled from {props.block.originalDate}
+          </span>
+        ) : null}
         {props.variant === "backlog" ? (
           <>
             <span className="block font-mono text-[10px] tracking-wide text-teal">
@@ -107,7 +115,7 @@ export function CalendarBlockCard(props: CardProps) {
               <input
                 aria-label={`${props.item.title} block size`}
                 className="h-7 w-16 rounded-[7px] border border-border bg-surface px-2 font-mono text-xs text-ink outline-none transition focus:border-teal focus:ring-2 focus:ring-teal/15"
-                max={Math.max(props.item.baseWeekTarget, ...Object.values(props.item.weekTargets))}
+                max={props.item.weekTarget}
                 min="0.01"
                 onChange={(event) => props.onBlockValueChange(event.target.value)}
                 step={executionStyleOf(props.item) === "occurrence" ? "1" : "any"}

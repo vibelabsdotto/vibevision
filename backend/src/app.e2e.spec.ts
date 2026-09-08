@@ -284,6 +284,134 @@ describe('app e2e', () => {
     expect(vol.status).toBe('on_track');
   });
 
+  it('carries scheduled work consistently through calendar, Today, logging and undo over HTTP', async () => {
+    jest.useFakeTimers({
+      now: new Date('2026-09-08T12:00:00.000Z'),
+      doNotFake: [
+        'nextTick',
+        'queueMicrotask',
+        'setImmediate',
+        'clearImmediate',
+        'setInterval',
+        'clearInterval',
+        'setTimeout',
+        'clearTimeout',
+        'hrtime',
+        'performance',
+      ],
+    });
+    try {
+      const cycleRes = await authed('post', '/v1/cycles')
+        .send({
+          title: 'HTTP Rollover',
+          start_date: '2026-09-07',
+        })
+        .expect(201);
+      const cycleId = cycleRes.body.cycle.id as string;
+      await authed('post', `/v1/cycles/${cycleId}/activate`).expect(200);
+      const goalRes = await authed('post', '/v1/goals')
+        .send({
+          cycle_id: cycleId,
+          title: 'Ship',
+        })
+        .expect(201);
+      const tacticRes = await authed('post', '/v1/tactics')
+        .send({
+          goal_id: goalRes.body.goal.id as string,
+          title: 'Pages',
+          tracking_type: 'quantity',
+          recurrence_type: 'times_per_week',
+          target_value: 5,
+          unit: 'pages',
+        })
+        .expect(201);
+      const tacticId = tacticRes.body.tactic.id as string;
+      const blockRes = await authed('post', '/v1/calendar-blocks')
+        .send({
+          tactic_id: tacticId,
+          date: '2026-09-07',
+          planned_value: 5,
+        })
+        .expect(201);
+      const blockId = blockRes.body.calendar_block.id as string;
+      await authed('post', '/v1/entries/log')
+        .send({
+          tactic_id: tacticId,
+          date: '2026-09-07',
+          value: 2,
+        })
+        .expect(201);
+      const calendarUrl = `/v1/cycles/${cycleId}/calendar?from=2026-09-07&to=2026-09-13`;
+      const calendar = await authed('get', calendarUrl).expect(200);
+      expect(calendar.body.current_week).toBe(1);
+      expect(calendar.body.blocks).toEqual([
+        expect.objectContaining({
+          id: blockId,
+          date: '2026-09-08',
+          original_date: '2026-09-07',
+          planned_value: 5,
+          scheduled_value: 3,
+        }),
+      ]);
+      expect(calendar.body.scheduling[0]).toMatchObject({
+        scheduled: 5,
+        remaining: 0,
+      });
+      const stateUrl = `/v1/tactics/${tacticId}/today-state?date=2026-09-08`;
+      const state = await authed('get', stateUrl).expect(200);
+      expect(state.body).toMatchObject({ today_actual: 0, today_target: 3 });
+      await authed('post', '/v1/entries/log')
+        .send({
+          tactic_id: tacticId,
+          date: '2026-09-08',
+          value: 3,
+        })
+        .expect(201);
+      await authed('post', '/v1/entries/log')
+        .send({
+          tactic_id: tacticId,
+          date: '2026-09-08',
+          value: 1,
+        })
+        .expect(400);
+      const dashboard = await authed(
+        'get',
+        `/v1/dashboard?cycle_id=${cycleId}&as_of=2026-09-08`,
+      ).expect(200);
+      expect(dashboard.body.dashboard.today_tactics[0]).toMatchObject({
+        today_actual: 3,
+        today_target: 3,
+        is_today_complete: true,
+      });
+      await authed('post', '/v1/entries/undo')
+        .send({
+          tactic_id: tacticId,
+          date: '2026-09-08',
+        })
+        .expect(200);
+      const undone = await authed('get', stateUrl).expect(200);
+      expect(undone.body).toMatchObject({ today_actual: 2, today_target: 3 });
+      const stored = await authed(
+        'get',
+        `/v1/calendar-blocks/${blockId}`,
+      ).expect(200);
+      expect(stored.body.calendar_block).toMatchObject({
+        date: '2026-09-07',
+        planned_value: 5,
+      });
+      const score = await authed(
+        'get',
+        `/v1/cycles/${cycleId}/score?week=1&as_of=2026-09-08`,
+      ).expect(200);
+      expect(score.body.score.tactic_scores[0]).toMatchObject({
+        actual: 4,
+        full_week_planned: 5,
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('manages tokens without leaking hashes', async () => {
     const created = await authed('post', '/v1/tokens').send({ name: 'second' });
     expect(created.status).toBe(201);

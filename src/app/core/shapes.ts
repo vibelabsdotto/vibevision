@@ -148,6 +148,8 @@ export type CalendarBlock = {
 };
 
 export type CalendarBlockWithTitles = CalendarBlock & {
+  originalDate: string;
+  scheduledValue: number;
   tacticTitle: string;
   goalTitle: string;
   unit: string;
@@ -437,6 +439,8 @@ export function mapBlock(row: R): CalendarBlock {
 export function mapBlockWithTitles(row: R): CalendarBlockWithTitles {
   return {
     ...mapBlock(row),
+    originalDate: String(row.original_date ?? row.date),
+    scheduledValue: Number(row.scheduled_value ?? row.planned_value),
     tacticTitle: String(row.tactic_title ?? "Unknown"),
     goalTitle: String(row.goal_title ?? "Unknown"),
     unit: String(row.unit ?? "")
